@@ -10,6 +10,9 @@ from pydantic import BaseModel
 
 from core.data_broker import global_state
 from core.pipeline_manager import PipelineController
+from interfaces.base import AudioInterface
+from interfaces.behringer import BehringerInterface
+from interfaces.goxlr import GoXLRInterface
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
@@ -17,12 +20,23 @@ with open("/opt/briclite/config.json") as f:
     config = json.load(f)
 
 controller: Optional[PipelineController] = None
+interface: Optional[AudioInterface] = None
+
+
+def _make_interface(cfg: dict) -> AudioInterface:
+    kind = cfg.get("system", {}).get("audio_interface", "behringer")
+    if kind == "behringer":
+        return BehringerInterface(cfg)
+    if kind == "goxlr":
+        return GoXLRInterface(cfg)
+    raise ValueError(f"Unknown audio_interface: {kind!r}")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global controller
-    controller = PipelineController(config)
+    global controller, interface
+    interface = _make_interface(config)
+    controller = PipelineController(config, interface)
     yield
 
 
@@ -46,7 +60,7 @@ async def connect_codec(body: ConnectRequest = ConnectRequest()):
     if body.target_ip:
         config["audio_network"]["target_ip"] = body.target_ip
     snapshot = await global_state.get_snapshot()
-    controller = PipelineController(config)
+    controller = PipelineController(config, interface)
     controller.start(loop)
     saved_mode = snapshot.get("rx_channel_mode", "stereo")
     if saved_mode != "stereo":

@@ -10,6 +10,7 @@ import time
 gi.require_version("Gst", "1.0")
 from gi.repository import Gst, GLib
 from .data_broker import global_state
+from interfaces.base import AudioInterface
 
 logger = logging.getLogger("pipeline")
 
@@ -102,10 +103,10 @@ class JitterBuffer:
 
 class PipelineController:
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, interface: AudioInterface):
         Gst.init(None)
         net = config["audio_network"]
-        self.alsa_dev   = net["alsa_device"]
+        self.interface  = interface
         self.target_ip  = net["target_ip"]
         self.tx_port    = net["tx_port"]
         self.rx_port    = net["rx_port"]
@@ -138,7 +139,7 @@ class PipelineController:
             f'audiomixmatrix name=rx_router in-channels=2 out-channels=2 matrix="{matrix}" ! '
             f"level name=rx_meter ! audioresample ! audiorate ! "
             f"audio/x-raw,rate=44100,channels=2 ! "
-            f"alsasink device={self.alsa_dev} sync=false"
+            f"{self.interface.rx_sink_bin()}"
         )
         logger.info(f"RX ({mode}): {rx_str}")
         pipeline = Gst.parse_launch(rx_str)
@@ -151,8 +152,7 @@ class PipelineController:
 
     def _build_pipelines(self):
         tx_str = (
-            f"alsasrc device={self.alsa_dev} ! audioconvert ! "
-            f"audio/x-raw,rate=44100,channels=2 ! "
+            f"{self.interface.tx_source_bin()} ! "
             f"level name=tx_meter ! "
             f"audioresample ! audio/x-raw,rate=24000,channels=2 ! "
             f"avenc_aac ! aacparse ! "
@@ -177,6 +177,7 @@ class PipelineController:
         self.sock.settimeout(0.5)
         self.sock.bind(("0.0.0.0", self.rx_port))
 
+        self.interface.start()
         self.tx_pipeline.set_state(Gst.State.PLAYING)
         self.rx_pipeline.set_state(Gst.State.PLAYING)
         self.is_active = True
@@ -203,6 +204,7 @@ class PipelineController:
         self.tx_pipeline.set_state(Gst.State.NULL)
         self.rx_pipeline.set_state(Gst.State.NULL)
         self.glib_loop.quit()
+        self.interface.stop()
         self.jitter_buf.reset()
         if self.sock:
             try:

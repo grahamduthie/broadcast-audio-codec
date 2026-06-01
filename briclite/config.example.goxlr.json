@@ -1,7 +1,7 @@
 {
   "system": {
     "device_mode": "STUDIO_RECEIVER",
-    "audio_interface": "behringer",
+    "audio_interface": "goxlr",
     "web_port": 80,
     "bind_address": "0.0.0.0"
   },
@@ -9,8 +9,13 @@
     "target_ip": "192.0.2.100",
     "tx_port": 5004,
     "rx_port": 5004,
-    "buffer_ms": 200,
-    "alsa_device": "hw:0,0"
+    "buffer_ms": 200
+  },
+  "goxlr": {
+    "alsa_device": "hw:2,0",
+    "broadcast_mix_channels": [0, 1],
+    "rx_left_channels": [2, 3],
+    "rx_right_channels": [4, 5]
   },
   "expansion_future": {
     "hardware_display_enabled": false,
