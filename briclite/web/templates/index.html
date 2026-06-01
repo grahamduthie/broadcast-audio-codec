@@ -47,6 +47,11 @@
         .btn-mode + .btn-mode { border-left: none; }
         .btn-mode.active { background: #1565c0; color: #fff; border-color: #1565c0; }
 
+        /* Interface mode badge */
+        .iface-badge { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: bold; letter-spacing: 0.08em; }
+        .iface-goxlr    { background: #003333; color: #00FFFF; border: 1px solid #00FFFF44; }
+        .iface-behringer { background: #1a2a3a; color: #90caf9; border: 1px solid #1565c044; }
+
         /* Analogue meters */
         .am-row { display: flex; gap: 8px; margin-top: 4px; }
         .am-wrap { display: flex; flex-direction: column; }
@@ -61,7 +66,10 @@
     <h2>Broadcast Audio Codec Dashboard</h2>
     <div class="grid">
         <div class="card">
-            <h3>Controls</h3>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+                <h3 style="margin:0;">Controls</h3>
+                <span id="iface-badge" class="iface-badge iface-behringer">BEHRINGER</span>
+            </div>
             <label for="field-ip">Field Unit IP (Studio Receiver mode)</label>
             <input type="text" id="field-ip" placeholder="e.g. 82.1.2.3 or leave blank for Remote Sender">
             <button class="btn btn-start" onclick="connectLink()">CONNECT LINK</button>
@@ -422,6 +430,14 @@
                 document.querySelectorAll('#chan-mode-btns .btn-mode').forEach(b => b.classList.remove('active'));
                 const modeEl = document.getElementById('mode-' + d.rx_channel_mode);
                 if (modeEl) modeEl.classList.add('active');
+            }
+
+            // Interface mode badge
+            if (d.audio_interface) {
+                const badge = document.getElementById('iface-badge');
+                const isGoxlr = d.audio_interface === 'GoXLR';
+                badge.textContent = d.audio_interface.toUpperCase();
+                badge.className = 'iface-badge ' + (isGoxlr ? 'iface-goxlr' : 'iface-behringer');
             }
 
             if (d.status === 'CONNECTED') {

@@ -1,7 +1,7 @@
 {
   "system": {
     "device_mode": "STUDIO_RECEIVER",
-    "audio_interface": "behringer",
+    "audio_interface": "auto",
     "web_port": 80,
     "bind_address": "0.0.0.0"
   },

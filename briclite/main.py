@@ -24,12 +24,38 @@ interface: Optional[AudioInterface] = None
 
 
 def _make_interface(cfg: dict) -> AudioInterface:
-    kind = cfg.get("system", {}).get("audio_interface", "behringer")
-    if kind == "behringer":
-        return BehringerInterface(cfg)
+    kind = cfg.get("system", {}).get("audio_interface", "auto")
     if kind == "goxlr":
         return GoXLRInterface(cfg)
-    raise ValueError(f"Unknown audio_interface: {kind!r}")
+    if kind == "behringer":
+        return BehringerInterface(cfg)
+    # auto: GoXLR takes priority when available
+    if GoXLRInterface.is_available():
+        logging.getLogger("main").info("GoXLR Mini detected — using GoXLR interface")
+        return GoXLRInterface(cfg)
+    logging.getLogger("main").info("No GoXLR Mini found — using Behringer interface")
+    return BehringerInterface(cfg)
+
+
+async def _interface_monitor():
+    """Poll every 5 s and hot-swap the audio interface if GoXLR presence changes."""
+    global controller, interface
+    log = logging.getLogger("main")
+    while True:
+        await asyncio.sleep(5)
+        goxlr_now = GoXLRInterface.is_available()
+        goxlr_was = isinstance(interface, GoXLRInterface)
+        if goxlr_now == goxlr_was:
+            continue
+        loop = asyncio.get_event_loop()
+        if controller.is_active:
+            log.info("Audio interface change detected while codec active — stopping pipeline")
+            controller.stop(loop)
+        interface = _make_interface(config)
+        controller = PipelineController(config, interface)
+        mode = "GoXLR" if goxlr_now else "Behringer"
+        await global_state.update_metrics({"audio_interface": mode})
+        log.info(f"Audio interface switched to {mode}")
 
 
 @asynccontextmanager
@@ -37,7 +63,15 @@ async def lifespan(app: FastAPI):
     global controller, interface
     interface = _make_interface(config)
     controller = PipelineController(config, interface)
+    mode = "GoXLR" if isinstance(interface, GoXLRInterface) else "Behringer"
+    await global_state.update_metrics({"audio_interface": mode})
+    monitor = asyncio.create_task(_interface_monitor())
     yield
+    monitor.cancel()
+    try:
+        await monitor
+    except asyncio.CancelledError:
+        pass
 
 
 app = FastAPI(title="Broadcast Audio Codec Core", lifespan=lifespan)
