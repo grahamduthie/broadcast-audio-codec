@@ -1,0 +1,80 @@
+import json
+import logging
+import asyncio
+from contextlib import asynccontextmanager
+from typing import Optional
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
+
+from core.data_broker import global_state
+from core.pipeline_manager import PipelineController
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+
+with open("/opt/briclite/config.json") as f:
+    config = json.load(f)
+
+controller: Optional[PipelineController] = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global controller
+    controller = PipelineController(config)
+    yield
+
+
+app = FastAPI(title="PSA300 Broadcast Codec Core", lifespan=lifespan)
+
+
+class ConnectRequest(BaseModel):
+    target_ip: Optional[str] = None
+
+
+@app.post("/api/connect")
+async def connect_codec(body: ConnectRequest = ConnectRequest()):
+    global controller
+    loop = asyncio.get_event_loop()
+    if controller.is_active:
+        return {"status": "error", "message": "Already running"}
+    if body.target_ip:
+        config["audio_network"]["target_ip"] = body.target_ip
+    controller = PipelineController(config)
+    controller.start(loop)
+    return {"status": "success", "message": "Pipeline active"}
+
+
+@app.post("/api/disconnect")
+async def disconnect_codec():
+    loop = asyncio.get_event_loop()
+    if not controller.is_active:
+        return {"status": "error", "message": "Pipeline inactive"}
+    controller.stop(loop)
+    return {"status": "success", "message": "Pipeline halted"}
+
+
+@app.websocket("/ws/telemetry")
+async def telemetry_socket(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        while True:
+            await asyncio.sleep(0.1)
+            snapshot = await global_state.get_snapshot()
+            await websocket.send_json(snapshot)
+    except WebSocketDisconnect:
+        pass
+
+
+@app.get("/")
+async def get_dashboard():
+    with open("/opt/briclite/web/templates/index.html") as f:
+        return HTMLResponse(content=f.read(), status_code=200)
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app",
+                host=config["system"]["bind_address"],
+                port=config["system"]["web_port"])

@@ -1,0 +1,21 @@
+{
+  "system": {
+    "device_mode": "STUDIO_RECEIVER",
+    "web_port": 8080,
+    "bind_address": "0.0.0.0"
+  },
+  "audio_network": {
+    "target_ip": "217.36.229.106",
+    "tx_port": 5004,
+    "rx_port": 5004,
+    "buffer_ms": 200,
+    "alsa_device": "hw:0,0"
+  },
+  "expansion_future": {
+    "hardware_display_enabled": false,
+    "serial_port": "/dev/ttyACM0",
+    "serial_baud": 115200,
+    "openvpn_auto_connect": false,
+    "openvpn_config_path": "/etc/openvpn/client/studio.conf"
+  }
+}
