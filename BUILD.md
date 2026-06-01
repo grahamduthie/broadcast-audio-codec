@@ -163,7 +163,16 @@ python3 -m venv --system-site-packages /opt/briclite/venv
 /opt/briclite/venv/bin/pip install fastapi 'uvicorn[standard]' pydantic
 ```
 
-### 6.2 `config.json`
+### 6.2 `config.json` (from template)
+
+Copy the template and customize with your network details:
+
+```bash
+cp /opt/briclite/briclite/config.example.json /opt/briclite/config.json
+nano /opt/briclite/config.json
+```
+
+Edit these fields:
 
 ```json
 {
@@ -173,7 +182,7 @@ python3 -m venv --system-site-packages /opt/briclite/venv
     "bind_address": "0.0.0.0"
   },
   "audio_network": {
-    "target_ip": "192.0.2.100",
+    "target_ip": "YOUR_STUDIO_IP",
     "tx_port": 5004,
     "rx_port": 5004,
     "buffer_ms": 200,
@@ -189,13 +198,23 @@ python3 -m venv --system-site-packages /opt/briclite/venv
 }
 ```
 
-**`buffer_ms`** is the jitter buffer playout window. 200ms is suitable for broadband. Increase to 400–500ms for Starlink or satellite OB links.
+**`target_ip`** — Replace `YOUR_STUDIO_IP` with the actual IP of your studio console or distribution system.
 
-**`target_ip`** is the remote end the server sends audio *to*. In Studio Receiver mode this is typically a studio console or distribution system. Replace `192.0.2.100` with your actual remote IP address.
+**`buffer_ms`** — Jitter buffer playout window. 200ms is suitable for broadband. Increase to 400–500ms for Starlink or satellite OB links.
 
-### 6.3 `core/__init__.py`
+**`alsa_device`** — Should be `hw:0,0` if Behringer is the first USB audio device. Verify with `aplay -l` and adjust if needed.
 
-Empty file (marks `core` as a Python package):
+### 6.3 Deploy code from repository
+
+Copy the application files to `/opt/briclite/`:
+
+```bash
+# Assuming you've cloned the repo to /home/codec/broadcast-audio-codec
+cp -r /home/codec/broadcast-audio-codec/briclite/* /opt/briclite/
+chmod +x /opt/briclite/main.py
+```
+
+Ensure the `core` directory is marked as a Python package:
 
 ```bash
 touch /opt/briclite/core/__init__.py
@@ -391,7 +410,8 @@ On long sessions (several hours), the remote device clock and the Behringer ALSA
 - [ ] Python venv created with `--system-site-packages`
 - [ ] FastAPI/uvicorn installed in venv
 - [ ] All application files deployed to `/opt/briclite/`
-- [ ] `config.json` updated with your remote IP address
+- [ ] `config.json` created from `config.example.json` and customized with your remote IP
+- [ ] `config.json` is NOT tracked in git (kept local to this server)
 - [ ] Manual GStreamer TX test passes (no errors)
 - [ ] CPU governor service enabled and running
 - [ ] `sysctl.conf` buffer entries added
