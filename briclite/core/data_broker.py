@@ -14,6 +14,7 @@ class ApplianceState:
     jitter_avg: int = 0
     packets_lost: int = 0
     packets_late: int = 0
+    rx_channel_mode: str = "stereo"
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     async def update_metrics(self, data: Dict[str, Any]):
@@ -34,6 +35,7 @@ class ApplianceState:
                 "jitter": self.jitter_avg,
                 "lost": self.packets_lost,
                 "late": self.packets_late,
+                "rx_channel_mode": self.rx_channel_mode,
             }
 
 

@@ -33,6 +33,10 @@ class ConnectRequest(BaseModel):
     target_ip: Optional[str] = None
 
 
+class RxModeRequest(BaseModel):
+    mode: str
+
+
 @app.post("/api/connect")
 async def connect_codec(body: ConnectRequest = ConnectRequest()):
     global controller
@@ -41,9 +45,22 @@ async def connect_codec(body: ConnectRequest = ConnectRequest()):
         return {"status": "error", "message": "Already running"}
     if body.target_ip:
         config["audio_network"]["target_ip"] = body.target_ip
+    snapshot = await global_state.get_snapshot()
     controller = PipelineController(config)
     controller.start(loop)
+    saved_mode = snapshot.get("rx_channel_mode", "stereo")
+    if saved_mode != "stereo":
+        controller.set_rx_channel_mode(saved_mode)
     return {"status": "success", "message": "Pipeline active"}
+
+
+@app.post("/api/rx_mode")
+async def set_rx_mode(body: RxModeRequest):
+    if body.mode not in {"stereo", "left", "right"}:
+        return {"status": "error", "message": "mode must be stereo, left, or right"}
+    await global_state.update_metrics({"rx_channel_mode": body.mode})
+    controller.set_rx_channel_mode(body.mode)
+    return {"status": "success", "message": f"RX routing: {body.mode}"}
 
 
 @app.post("/api/disconnect")

@@ -14,6 +14,11 @@ from .data_broker import global_state
 logger = logging.getLogger("pipeline")
 
 _WRAP      = 0x10000
+_MATRIX_STRINGS = {
+    "stereo": "<<1.0,0.0>,<0.0,1.0>>",
+    "left":   "<<1.0,0.0>,<1.0,0.0>>",
+    "right":  "<<0.0,1.0>,<0.0,1.0>>",
+}
 _RTP_CLOCK = 90000
 _AAC_SAMP  = 24000
 _AAC_FRAME = 1024
@@ -112,6 +117,7 @@ class PipelineController:
         self.rtp_ts     = random.randint(0, 0xFFFFFFFF)
         self.rtp_ssrc   = random.randint(0, 0xFFFFFFFF)
 
+        self.rx_channel_mode = "stereo"
         self.jitter_buf  = JitterBuffer(latency_ms=self.latency_ms)
         self.tx_pipeline = None
         self.rx_pipeline = None
@@ -120,6 +126,27 @@ class PipelineController:
         self.glib_loop   = GLib.MainLoop()
 
         self._build_pipelines()
+
+    def _build_rx_pipeline(self, mode: str):
+        matrix = _MATRIX_STRINGS.get(mode, _MATRIX_STRINGS["stereo"])
+        rx_str = (
+            f"appsrc name=rx_src is-live=true format=time block=false ! "
+            f"queue max-size-buffers=10 ! "
+            f"audio/mpeg,mpegversion=4,stream-format=adts ! "
+            f"avdec_aac ! audioconvert ! "
+            f'audiomixmatrix name=rx_router in-channels=2 out-channels=2 matrix="{matrix}" ! '
+            f"level name=rx_meter ! audioresample ! audiorate ! "
+            f"audio/x-raw,rate=44100,channels=2 ! "
+            f"alsasink device={self.alsa_dev} sync=false"
+        )
+        logger.info(f"RX ({mode}): {rx_str}")
+        pipeline = Gst.parse_launch(rx_str)
+        appsrc = pipeline.get_by_name("rx_src")
+        appsrc.set_property("caps", Gst.Caps.from_string("audio/mpeg,mpegversion=4,stream-format=adts"))
+        bus = pipeline.get_bus()
+        bus.add_signal_watch()
+        bus.connect("message", self._on_bus_message)
+        return pipeline, appsrc
 
     def _build_pipelines(self):
         tx_str = (
@@ -131,34 +158,14 @@ class PipelineController:
             f"audio/mpeg,mpegversion=4,stream-format=adts ! "
             f"appsink name=tx_sink emit-signals=true sync=false"
         )
-        rx_str = (
-            f"appsrc name=rx_src is-live=true format=time block=false ! "
-            f"queue max-size-buffers=10 ! "
-            f"audio/mpeg,mpegversion=4,stream-format=adts ! "
-            f"avdec_aac ! audioconvert ! "
-            f"level name=rx_meter ! audioresample ! audiorate ! "
-            f"audio/x-raw,rate=44100,channels=2 ! "
-            f"alsasink device={self.alsa_dev} sync=false"
-        )
         logger.info(f"TX: {tx_str}")
-        logger.info(f"RX: {rx_str}")
-
         self.tx_pipeline = Gst.parse_launch(tx_str)
-        self.rx_pipeline = Gst.parse_launch(rx_str)
+        self.tx_pipeline.get_by_name("tx_sink").connect("new-sample", self._on_tx_sample)
+        bus = self.tx_pipeline.get_bus()
+        bus.add_signal_watch()
+        bus.connect("message", self._on_bus_message)
 
-        self.tx_pipeline.get_by_name("tx_sink").connect(
-            "new-sample", self._on_tx_sample
-        )
-        self.rx_appsrc = self.rx_pipeline.get_by_name("rx_src")
-        self.rx_appsrc.set_property(
-            "caps",
-            Gst.Caps.from_string("audio/mpeg,mpegversion=4,stream-format=adts")
-        )
-
-        for p in (self.tx_pipeline, self.rx_pipeline):
-            bus = p.get_bus()
-            bus.add_signal_watch()
-            bus.connect("message", self._on_bus_message)
+        self.rx_pipeline, self.rx_appsrc = self._build_rx_pipeline(self.rx_channel_mode)
 
     def start(self, event_loop):
         self.event_loop = event_loop
@@ -207,6 +214,14 @@ class PipelineController:
             }),
             event_loop
         )
+
+    def set_rx_channel_mode(self, mode: str):
+        self.rx_channel_mode = mode
+        if not self.is_active:
+            return
+        self.rx_pipeline.set_state(Gst.State.NULL)
+        self.rx_pipeline, self.rx_appsrc = self._build_rx_pipeline(mode)
+        self.rx_pipeline.set_state(Gst.State.PLAYING)
 
     def _on_tx_sample(self, appsink):
         sample = appsink.emit("pull-sample")

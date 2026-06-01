@@ -71,6 +71,11 @@
 
         .chan-label { font-size: 9px; color: #555; text-align: center; margin-top: 2px; }
         .divider { width: 1px; background: #333; align-self: stretch; margin: 0 4px; }
+        .btn-mode { flex: 1; padding: 8px 4px; font-size: 12px; font-weight: bold; border: 1px solid #555; background: #2a2a2a; color: #aaa; cursor: pointer; }
+        .btn-mode:first-child { border-radius: 4px 0 0 4px; }
+        .btn-mode:last-child  { border-radius: 0 4px 4px 0; }
+        .btn-mode + .btn-mode { border-left: none; }
+        .btn-mode.active { background: #1565c0; color: #fff; border-color: #1565c0; }
     </style>
 </head>
 <body>
@@ -82,6 +87,14 @@
             <input type="text" id="field-ip" placeholder="e.g. 82.1.2.3 or leave blank for Remote Sender">
             <button class="btn btn-start" onclick="connectLink()">CONNECT LINK</button>
             <button class="btn btn-stop"  onclick="fetch('/api/disconnect', {method:'POST'})">DISCONNECT LINK</button>
+            <div style="margin: 10px 0 12px;">
+                <label>RX Channel Routing</label>
+                <div style="display:flex; margin-top:6px;">
+                    <button class="btn-mode active" id="mode-stereo" onclick="setChannelMode('stereo')">L+R STEREO</button>
+                    <button class="btn-mode"        id="mode-left"   onclick="setChannelMode('left')">LEFT ONLY</button>
+                    <button class="btn-mode"        id="mode-right"  onclick="setChannelMode('right')">RIGHT ONLY</button>
+                </div>
+            </div>
             <hr style="border-color:#333;">
             <h4>Link Status: <span id="lbl-status" style="color:#d32f2f;">DISCONNECTED</span></h4>
             <div>Jitter: <span id="lbl-jitter" class="stat-val">0</span> ms</div>
@@ -181,6 +194,16 @@
         buildScale('scale-tx');
         buildScale('scale-rx');
 
+        function setChannelMode(mode) {
+            fetch('/api/rx_mode', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ mode: mode })
+            });
+            document.querySelectorAll('.btn-mode').forEach(b => b.classList.remove('active'));
+            document.getElementById('mode-' + mode).classList.add('active');
+        }
+
         function connectLink() {
             const ip = document.getElementById('field-ip').value.trim();
             const body = ip ? JSON.stringify({ target_ip: ip }) : '{}';
@@ -230,6 +253,12 @@
             const rxPeak = Math.max(d.rx_peak_l, d.rx_peak_r);
             document.getElementById('lbl-tx-db').innerText = d.status === 'CONNECTED' ? txPeak.toFixed(1) + ' dBFS' : '— dBFS';
             document.getElementById('lbl-rx-db').innerText = d.status === 'CONNECTED' ? rxPeak.toFixed(1) + ' dBFS' : '— dBFS';
+
+            if (d.rx_channel_mode) {
+                document.querySelectorAll('.btn-mode').forEach(b => b.classList.remove('active'));
+                const modeEl = document.getElementById('mode-' + d.rx_channel_mode);
+                if (modeEl) modeEl.classList.add('active');
+            }
 
             if (d.status === 'CONNECTED') {
                 jitterChart.data.datasets[0].data.shift();
