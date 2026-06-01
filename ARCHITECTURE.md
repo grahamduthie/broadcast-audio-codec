@@ -299,39 +299,73 @@ The audio I/O layer is abstracted behind an `AudioInterface` ABC (`interfaces/ba
 
 ```python
 class AudioInterface(ABC):
-    def tx_source_bin(self) -> str: ...  # GStreamer bin: produces audio/x-raw,rate≥44100,channels=2
-    def rx_sink_bin(self)  -> str: ...  # GStreamer bin: accepts audio/x-raw,rate=44100,channels=2
-    def start(self) -> None: ...         # Called when codec pipeline starts
-    def stop(self)  -> None: ...         # Called when codec pipeline stops
+    def tx_source_bin(self) -> str: ...          # GStreamer bin: produces audio/x-raw,rate≥44100,channels=2
+    def rx_sink_bin(self)  -> str: ...           # GStreamer bin: accepts audio/x-raw,rate=44100,channels=2
+    def extra_rx_source_bins(self) -> list[str]: # Additional sources to mix into rx_sink_bin (default: [])
+    def start(self) -> None: ...                  # Called when codec pipeline starts
+    def stop(self)  -> None: ...                  # Called when codec pipeline stops
 ```
 
-`PipelineController` slots the return values directly into the TX and RX pipeline strings. Each interface owns its own hardware setup, ALSA config, and daemon communication.
+`PipelineController` slots `tx_source_bin()` and `rx_sink_bin()` into the pipeline strings, then appends each string from `extra_rx_source_bins()` as additional branches before calling `Gst.parse_launch()`. Each interface owns its own hardware setup, ALSA config, and daemon communication.
 
 ### BehringerInterface
 
-Wraps the original behaviour exactly. TX source: `alsasrc device=hw:0,0 ! audioconvert ! audio/x-raw,rate=44100,channels=2`. RX sink: `alsasink device=hw:0,0 sync=false`.
+Wraps the original behaviour exactly. TX source: `alsasrc device=hw:0,0 ! audioconvert ! audio/x-raw,rate=44100,channels=2`. RX sink: `alsasink device=hw:0,0 sync=false`. Returns `[]` from `extra_rx_source_bins()`.
 
 ### GoXLRInterface
 
 Used when a GoXLR Mini is present. On `start()`:
 1. Writes an ALSA `route` virtual device (`goxlr_broadcast`) to `~/.asoundrc` to extract the 2-channel Broadcast Mix from the 21-channel USB capture stream
 2. Connects to the goxlr-utility daemon (`/tmp/goxlr.socket`) and retrieves the device serial
-3. Applies fader assignments, routing matrix, and cyan gradient lighting via daemon IPC
+3. Applies fader assignments, routing matrix, and mute functions via daemon IPC
+4. Applies cyan gradient lighting to all faders and the Bleep button
 
 **TX:** `alsasrc device=goxlr_broadcast ! audioconvert ! audio/x-raw,rate=48000,channels=2`
 
-**RX:** The ALSA `route` plugin cannot reliably expand 2 channels to the GoXLR's 10-channel playback stream (silent failure; the device accepts S32LE only and ALSA's constraint propagation is broken for this asymmetric case). Instead, GStreamer's `audiomixmatrix` expands the decoded stereo stream to 10 channels before writing directly to `hw:GoXLRMini,0`:
+**RX — two-source pipeline:** The ALSA `route` plugin cannot reliably expand 2 channels to the GoXLR's 10-channel playback stream (silent failure; S32LE-only device, broken ALSA constraint propagation). Instead, GStreamer's `audiomixmatrix` maps each source to its assigned GoXLR channels, and `audiomixer` combines them before writing to `hw:GoXLRMini,0`:
 
 ```
-audioresample ! audio/x-raw,rate=48000,channels=2 !
-audiomixmatrix in-channels=2 out-channels=10 matrix="<...>" !
+# Codec RX → Game (ch 2-3) + Music (ch 6-7)
+... ! audiomixmatrix in-channels=2 out-channels=10 matrix="<RX>" !
+audiomixer name=goxlr_mix !
 audioconvert ! audio/x-raw,format=S32LE !
 alsasink device=hw:GoXLRMini,0 sync=false
+
+# Behringer capture → Chat (ch 4-5)   [from extra_rx_source_bins()]
+alsasrc device=hw:CODEC,0 ! audioconvert !
+audioresample ! audio/x-raw,rate=48000,channels=2 !
+audiomixmatrix in-channels=2 out-channels=10 matrix="<Behringer>" !
+goxlr_mix.
 ```
+
+**Fader layout:**
+
+| Fader | Channel | Signal | BroadcastMix |
+|---|---|---|---|
+| A | Mic | Main microphone (XLR) | ✓ |
+| B | Chat | Guest mic (Behringer `hw:CODEC,0`) | ✓ |
+| C | Game | News feed (codec RX Right) | ✓ |
+| D | LineIn | Music player (GoXLR line in) | ✓ |
+| — | Music | Studio return (codec RX Left) | — |
+
+The studio return (Music bus) has no fader and is never in the broadcast mix. It is only audible in headphones via the Bleep PFL button.
+
+**Bleep button — Studio Return PFL:**
+
+`monitor_pfl()` runs as a background asyncio task, subscribing to the goxlr-utility WebSocket (`ws://localhost:14564/api/websocket`). On each `button_down/Bleep: true` event, it toggles studio return PFL:
+
+- *PFL on:* All fader sources removed from headphones (`SetRouter`). Music bus routed to headphones. Music volume set to 255 (`SetVolume`) for true pre-fade monitoring regardless of internal volume. Bleep LED → orange.
+- *PFL off:* Headphone routing restored. Music volume restored. Bleep LED → cyan.
+
+IPC calls triggered by button events run in a thread pool (`asyncio.to_thread`) to avoid blocking the FastAPI event loop.
+
+**Headphone volume control:**
+
+`POST /api/headphone_volume {"pct": 0–100}` calls `SetVolume ["Headphones", N]`. Visible in the web UI as a slider (GoXLR mode only). Current volume is read from `GetStatus` at startup and included in WebSocket telemetry.
 
 ### Auto-detection and hotplug
 
-`main.py` selects the interface at startup (`audio_interface: auto` in config — default) and monitors for changes every 5 seconds. If GoXLR presence changes, the interface is hot-swapped; any active pipeline is stopped first. The web UI badge (`GoXLR` / `Behringer`) reflects the current mode via WebSocket telemetry.
+`main.py` selects the interface at startup (`audio_interface: auto` in config — default) and monitors for changes every 5 seconds. If GoXLR presence changes, the interface is hot-swapped; any active pipeline is stopped first. The web UI badge (`GoXLR` / `Behringer`) reflects the current mode via WebSocket telemetry. The PFL monitor task is started and cancelled alongside the GoXLR interface.
 
 The goxlr-utility daemon (`goxlr-daemon.service`) must be running for GoXLR mode to activate. The daemon is detected by probing `/tmp/goxlr.socket`. See `GOXLR-MINI-LINUX.md` for full daemon setup.
 

@@ -52,6 +52,11 @@
         .iface-goxlr    { background: #003333; color: #00FFFF; border: 1px solid #00FFFF44; }
         .iface-behringer { background: #1a2a3a; color: #90caf9; border: 1px solid #1565c044; }
 
+        /* Headphone volume slider */
+        .vol-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+        .vol-row input[type=range] { flex: 1; accent-color: #00FFFF; }
+        .vol-val { font-size: 13px; font-weight: bold; color: #00FFFF; width: 36px; text-align: right; flex-shrink: 0; }
+
         /* Analogue meters */
         .am-row { display: flex; gap: 8px; margin-top: 4px; }
         .am-wrap { display: flex; flex-direction: column; }
@@ -80,6 +85,14 @@
                     <button class="btn-mode active" id="mode-stereo" onclick="setChannelMode('stereo')">L+R STEREO</button>
                     <button class="btn-mode"        id="mode-left"   onclick="setChannelMode('left')">LEFT ONLY</button>
                     <button class="btn-mode"        id="mode-right"  onclick="setChannelMode('right')">RIGHT ONLY</button>
+                </div>
+            </div>
+            <div id="goxlr-controls" style="display:none;">
+                <hr style="border-color:#333; margin: 12px 0 10px;">
+                <label>Headphone Volume</label>
+                <div class="vol-row">
+                    <input type="range" id="hp-vol-slider" min="0" max="100" value="100" oninput="onHpVolInput(this.value)">
+                    <span class="vol-val" id="hp-vol-label">100%</span>
                 </div>
             </div>
             <hr style="border-color:#333;">
@@ -371,6 +384,21 @@
             document.getElementById('mode-' + mode).classList.add('active');
         }
 
+        let hpVolTimer = null;
+        let hpSliderDragging = false;
+        function onHpVolInput(val) {
+            hpSliderDragging = true;
+            document.getElementById('hp-vol-label').textContent = val + '%';
+            clearTimeout(hpVolTimer);
+            hpVolTimer = setTimeout(() => {
+                fetch('/api/headphone_volume', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ pct: parseInt(val) })
+                }).then(() => { hpSliderDragging = false; });
+            }, 80);
+        }
+
         function connectLink() {
             const ip = document.getElementById('field-ip').value.trim();
             fetch('/api/connect', {
@@ -432,12 +460,20 @@
                 if (modeEl) modeEl.classList.add('active');
             }
 
-            // Interface mode badge
+            // Interface mode badge + GoXLR controls visibility
             if (d.audio_interface) {
                 const badge = document.getElementById('iface-badge');
                 const isGoxlr = d.audio_interface === 'GoXLR';
                 badge.textContent = d.audio_interface.toUpperCase();
                 badge.className = 'iface-badge ' + (isGoxlr ? 'iface-goxlr' : 'iface-behringer');
+                document.getElementById('goxlr-controls').style.display = isGoxlr ? '' : 'none';
+            }
+
+            // Headphone volume slider (only sync when user is not dragging)
+            if (d.headphone_volume != null && !hpSliderDragging) {
+                const pct = Math.round(d.headphone_volume * 100 / 255);
+                document.getElementById('hp-vol-slider').value = pct;
+                document.getElementById('hp-vol-label').textContent = pct + '%';
             }
 
             if (d.status === 'CONNECTED') {

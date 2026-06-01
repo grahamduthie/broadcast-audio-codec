@@ -16,6 +16,7 @@ class ApplianceState:
     packets_late: int = 0
     rx_channel_mode: str = "stereo"
     audio_interface: str = "Behringer"
+    headphone_volume: int = 255
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     async def update_metrics(self, data: Dict[str, Any]):
@@ -38,6 +39,7 @@ class ApplianceState:
                 "late": self.packets_late,
                 "rx_channel_mode": self.rx_channel_mode,
                 "audio_interface": self.audio_interface,
+                "headphone_volume": self.headphone_volume,
             }
 
 

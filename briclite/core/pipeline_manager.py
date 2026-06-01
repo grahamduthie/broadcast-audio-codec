@@ -141,6 +141,8 @@ class PipelineController:
             f"audio/x-raw,rate=44100,channels=2 ! "
             f"{self.interface.rx_sink_bin()}"
         )
+        for extra in self.interface.extra_rx_source_bins():
+            rx_str += f" {extra}"
         logger.info(f"RX ({mode}): {rx_str}")
         pipeline = Gst.parse_launch(rx_str)
         appsrc = pipeline.get_by_name("rx_src")

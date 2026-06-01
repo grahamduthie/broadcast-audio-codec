@@ -106,13 +106,21 @@ GStreamer then uses `alsasrc device=goxlr_broadcast` and sees a normal stereo 48
 
 ---
 
-## 5. Routing Codec RX to GoXLR Inputs (RX) — implemented
+## 5. Routing Codec RX and Second Mic to GoXLR Inputs (RX) — implemented
 
-The codec receives decoded stereo audio from the remote end. Each channel is routed to a separate GoXLR input bus so they appear on independent faders.
+The PSA300 writes two independent audio sources into the GoXLR's 10-channel USB playback stream simultaneously. GStreamer's `audiomixer` element combines them before the single `alsasink`.
 
-**Implemented assignment:**
-- Codec RX Right → Game bus (playback ch 2–3) → Fader C → Broadcast Mix + LineOut + Headphones
-- Codec RX Left  → Chat bus (playback ch 4–5) → Fader D → LineOut + Headphones only
+### USB playback channel assignment
+
+| ALSA ch | GoXLR bus | Source | Fader | Routing |
+|---|---|---|---|---|
+| 0–1 | System | — | — | unused |
+| 2–3 | Game | Codec RX Right (News feed) | C | BroadcastMix, LineOut, Headphones |
+| 4–5 | Chat | Behringer capture (Guest mic) | B | BroadcastMix, LineOut, Headphones |
+| 6–7 | Music | Codec RX Left (Studio return) | — | none (PFL-only via Bleep button) |
+| 8–9 | Sample | — | — | unused |
+
+The studio return (RX Left) is on the Music bus with no fader — it cannot be mixed into the broadcast by accident. It is only audible in headphones when the operator activates Pre-Fade Listen via the Bleep button (see section 10).
 
 ### ALSA route plugin does NOT work for 10-channel playback
 
@@ -125,30 +133,41 @@ CHANNELS: [1 89478485]   (anomalous range — route plugin constraint propagatio
 
 Even with explicit `format=S32LE` in GStreamer, audio does not reach the hardware. Root cause: the ALSA `route` plugin does not correctly handle the 2→10 channel asymmetry on this device.
 
-### GStreamer audiomixmatrix — confirmed working
+### GStreamer audiomixmatrix + audiomixer — confirmed working
 
-Use GStreamer's `audiomixmatrix` to expand the 2-channel decoded stream to 10 channels before writing directly to `hw:GoXLRMini,0`:
+Two `audiomixmatrix` elements (one per source) each expand their 2-channel input to 10 channels, mapping only to their assigned GoXLR bus slots. GStreamer's `audiomixer` then sums the two 10-channel streams before writing to the GoXLR.
 
+**Codec RX matrix** (2-in → 10-out, rows = output ch, cols = RX L/R):
 ```
-audioresample ! audio/x-raw,rate=48000,channels=2 !
-audiomixmatrix in-channels=2 out-channels=10 matrix="<matrix>" !
+ch 0–1  System  <0.0,0.0> <0.0,0.0>  — silent
+ch 2–3  Game    <0.0,1.0> <0.0,1.0>  — RX Right (News feed)
+ch 4–5  Chat    <0.0,0.0> <0.0,0.0>  — silent (Behringer fills these)
+ch 6–7  Music   <1.0,0.0> <1.0,0.0>  — RX Left (Studio return)
+ch 8–9  Sample  <0.0,0.0> <0.0,0.0>  — silent
+```
+
+**Behringer matrix** (2-in → 10-out, rows = output ch, cols = Behringer L/R):
+```
+ch 0–1  System  <0.0,0.0> <0.0,0.0>  — silent
+ch 2–3  Game    <0.0,0.0> <0.0,0.0>  — silent
+ch 4–5  Chat    <1.0,0.0> <0.0,1.0>  — Behringer L→Chat L, R→Chat R
+ch 6–7  Music   <0.0,0.0> <0.0,0.0>  — silent
+ch 8–9  Sample  <0.0,0.0> <0.0,0.0>  — silent
+```
+
+Full GStreamer pipeline fragment:
+```
+# Codec RX path (fed by jitter buffer)
+... ! audiomixmatrix in-channels=2 out-channels=10 matrix="<RX matrix>" !
+audiomixer name=goxlr_mix !
 audioconvert ! audio/x-raw,format=S32LE !
 alsasink device=hw:GoXLRMini,0 sync=false
-```
 
-The 10×2 matrix (rows = GoXLR output channels, cols = codec RX channels):
-
-```
-<<0.0,0.0>,   # ch 0  System L  — silent
- <0.0,0.0>,   # ch 1  System R  — silent
- <0.0,1.0>,   # ch 2  Game L    — RX Right
- <0.0,1.0>,   # ch 3  Game R    — RX Right
- <1.0,0.0>,   # ch 4  Chat L    — RX Left
- <1.0,0.0>,   # ch 5  Chat R    — RX Left
- <0.0,0.0>,   # ch 6  Music L   — silent
- <0.0,0.0>,   # ch 7  Music R   — silent
- <0.0,0.0>,   # ch 8  Sample L  — silent
- <0.0,0.0>>   # ch 9  Sample R  — silent
+# Behringer capture (second mic), connects to the same audiomixer
+alsasrc device=hw:CODEC,0 ! audioconvert !
+audioresample ! audio/x-raw,rate=48000,channels=2 !
+audiomixmatrix in-channels=2 out-channels=10 matrix="<Behringer matrix>" !
+goxlr_mix.
 ```
 
 The `audioconvert ! audio/x-raw,format=S32LE` step is required — the GoXLR playback interface accepts **S32LE only** and will silently discard audio in any other format.
@@ -250,11 +269,38 @@ This enables/disables a crosspoint in the routing matrix.
 ```json
 { "Command": ["<serial>", { "SetVolume": ["Game", 127] }] }
 ```
-Volume range: 0–255.
+Volume range: 0–255. Applies globally to that channel (affects all output buses it is routed to).
+
+**Set fader mute function:**
+```json
+{ "Command": ["<serial>", { "SetFaderMuteFunction": ["A", "All"] }] }
+```
+Valid values: `All`, `ToStream`, `ToVoiceChat`, `ToPhones`, `ToLineOut`, `ToStream2`, `ToStreams`.  
+`ToStream2` is useful as a no-op target (mutes to an unused bus) when the mute button is being repurposed in software.
+
+**Set fader LED colour:**
+```json
+{ "Command": ["<serial>", { "SetFaderDisplayStyle": ["A", "Gradient"] }] }
+{ "Command": ["<serial>", { "SetFaderColours": ["A", "00FFFF", "000000"] }] }
+```
+
+**Set button LED colour:**
+```json
+{ "Command": ["<serial>", { "SetButtonColours": ["Bleep", "FF8800", "000000"] }] }
+```
+Button names with LEDs on the Mini: `Fader1Mute`, `Fader2Mute`, `Fader3Mute`, `Fader4Mute`, `Bleep`, `Cough`.
 
 ### Real-time events (WebSocket)
 
 The daemon emits JSON Patch messages whenever state changes (button press, fader move, USB hotplug). Subscribe to `ws://localhost:14564/api/websocket` to receive live updates.
+
+Example — mute button press and release:
+```json
+{ "data": { "Patch": [{ "op": "replace", "path": "/mixers/<serial>/button_down/Fader3Mute", "value": true }] } }
+{ "data": { "Patch": [{ "op": "replace", "path": "/mixers/<serial>/button_down/Fader3Mute", "value": false },
+                       { "op": "replace", "path": "/mixers/<serial>/fader_status/C/mute_state", "value": "MutedToX" }] } }
+```
+The `button_down` patch fires on press; the `mute_state` change fires on release. React to `button_down: true` for immediate response.
 
 ---
 
@@ -312,42 +358,73 @@ Config key `system.audio_interface` accepts `"auto"` (default), `"goxlr"`, or `"
 
 ### Fader layout (fixed, applied on every `start()`)
 
-| Fader | Source | Broadcast Mix | LineOut | Headphones |
-|---|---|---|---|---|
-| A | Mic (XLR) | ✓ | ✓ | ✓ |
-| B | LineIn | ✓ | ✓ | ✓ |
-| C | Game (codec RX Right) | ✓ | ✓ | ✓ |
-| D | Chat (codec RX Left) | — | ✓ | ✓ |
+| Fader | GoXLR ch | Source | BroadcastMix | LineOut | Headphones | Notes |
+|---|---|---|---|---|---|---|
+| A | Mic | Main microphone (XLR) | ✓ | ✓ | ✓ | |
+| B | Chat | Guest microphone (Behringer `hw:CODEC,0`) | ✓ | ✓ | ✓ | USB capture from Behringer |
+| C | Game | News feed (codec RX Right) | ✓ | ✓ | ✓ | |
+| D | LineIn | Music player (GoXLR 3.5mm line in) | ✓ | ✓ | ✓ | |
+| — | Music | Studio return (codec RX Left) | — | — | PFL only | No fader; Bleep PFL only |
 
-All other GoXLR input buses (Music, Console, System, Samples) are fully unrouted.
+The studio return is on the Music bus with no fader assigned, so it is invisible to the routing matrix during normal operation. It is **not** routed to BroadcastMix or LineOut under any circumstances.
+
+### Mute buttons
+
+All four fader mute buttons use `SetFaderMuteFunction: "All"` — standard GoXLR hardware mute behaviour, muting the channel to all output buses.
+
+### Bleep button — Studio Return Pre-Fade Listen
+
+The Bleep button is repurposed as a **PFL toggle** for the studio return (codec RX Left):
+
+- **Press once:** Bleep LED goes orange. All fader sources (A–D) are removed from headphones via `SetRouter`. Music bus is routed to headphones via `SetRouter`. Music channel volume is overridden to 255 via `SetVolume` (true pre-fade listen — audible regardless of internal volume state).
+- **Press again:** Bleep LED returns to cyan. Headphone routing is restored to normal (all fader sources). Music volume is restored to its pre-PFL value.
+
+The studio return (RX Left / Music bus) is never in the broadcast mix, so activating PFL has no on-air effect.
+
+Implementation: `monitor_pfl()` subscribes to `ws://localhost:14564/api/websocket` as a background asyncio task. It watches for `button_down/Bleep: true` patches. IPC commands triggered by button presses run in a thread pool (`asyncio.to_thread`) to avoid blocking the FastAPI event loop.
+
+### Headphone volume
+
+`POST /api/headphone_volume` with `{"pct": 0–100}` calls `SetVolume ["Headphones", N]` (N = pct × 255 / 100). The web UI shows a slider in GoXLR mode only. The current volume is read from `GetStatus` at startup and broadcast via WebSocket telemetry so the slider initialises to the actual hardware state.
 
 ### `start()`
-1. Write `~/.asoundrc` with the `goxlr_broadcast` virtual capture device
-2. Connect to daemon socket, retrieve device serial
-3. Apply fader assignments via `SetFader`
-4. Apply full routing matrix via `SetRouter` (all 8 sources × 5 outputs)
-5. Apply cyan gradient lighting via `SetFaderDisplayStyle` + `SetFaderColours`
+1. Reset PFL state
+2. Write `~/.asoundrc` with the `goxlr_broadcast` virtual capture device
+3. Connect to daemon socket, retrieve device serial
+4. Apply fader assignments via `SetFader`
+5. Apply full routing matrix via `SetRouter` (all 8 sources × 5 outputs)
+6. Restore mute buttons to `All` via `SetFaderMuteFunction`
+7. Apply cyan gradient lighting (faders + Bleep button) via `SetFaderColours` / `SetButtonColours`
 
 ### `tx_source_bin()`
 ```python
 return "alsasrc device=goxlr_broadcast ! audioconvert ! audio/x-raw,rate=48000,channels=2"
 ```
 
-### `rx_sink_bin()`
+### `rx_sink_bin()` and `extra_rx_source_bins()`
+
+`rx_sink_bin()` returns a GStreamer fragment that maps codec RX to Game (ch 2–3) and Music (ch 6–7), inserts a named `audiomixer`, and writes to `hw:GoXLRMini,0`. `extra_rx_source_bins()` returns a second fragment that captures from the Behringer (`hw:CODEC,0`), maps it to Chat (ch 4–5), and connects to the same `audiomixer`:
+
 ```python
-# Expands decoded stereo to 10-channel GoXLR playback using GStreamer audiomixmatrix.
-# GoXLR requires S32LE — audioconvert must be applied before alsasink.
-return (
-    'audioresample ! audio/x-raw,rate=48000,channels=2 ! '
-    'audiomixmatrix in-channels=2 out-channels=10 matrix="<...>" ! '
-    'audioconvert ! audio/x-raw,format=S32LE ! '
-    'alsasink device=hw:GoXLRMini,0 sync=false'
-)
+# rx_sink_bin() — appended to the jitter-buffer decode chain
+'audioresample ! audio/x-raw,rate=48000,channels=2 ! '
+'audiomixmatrix in-channels=2 out-channels=10 matrix="<RX matrix>" ! '
+'audiomixer name=goxlr_mix ! '
+'audioconvert ! audio/x-raw,format=S32LE ! '
+'alsasink device=hw:GoXLRMini,0 sync=false'
+
+# extra_rx_source_bins()[0] — separate source, appended as a second pipeline branch
+'alsasrc device=hw:CODEC,0 ! audioconvert ! '
+'audioresample ! audio/x-raw,rate=48000,channels=2 ! '
+'audiomixmatrix in-channels=2 out-channels=10 matrix="<Behringer matrix>" ! '
+'goxlr_mix.'
 ```
+
+`pipeline_manager.py` appends each string from `extra_rx_source_bins()` to the RX pipeline string before calling `Gst.parse_launch()`. The Behringer source starts and stops with the codec pipeline.
 
 ### IPC — direct socket, no third-party library
 
-All daemon communication uses raw Unix socket with the `[uint32 length][JSON]` framing. `goxlr-py` was not used — the raw approach has no dependencies and the protocol is simple enough. Open a new socket per command (no persistent connection needed).
+All daemon communication uses raw Unix socket with `[uint32 length][JSON]` framing. `goxlr-py` was not used — the raw approach has no dependencies and the protocol is simple. A new socket is opened per command; no persistent connection is maintained.
 
 ---
 
