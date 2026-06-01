@@ -1,10 +1,10 @@
-# PSA300 Broadcast Codec
+# Broadcast Audio Codec
 
-A software-defined broadcast audio codec running on a Pulse Secure PSA300 appliance, integrating bidirectional AAC-LC audio streaming with the Marlow FM Comrex BRIC-Link.
+A software-defined broadcast audio codec for remote radio stations, providing bidirectional AAC-LC audio streaming to studio mixing consoles and broadcast infrastructure.
 
 ## Overview
 
-This project enables standalone broadcast-grade audio transport from a headless PSA300 unit:
+This project enables standalone broadcast-grade audio transport from a headless Ubuntu server:
 
 - **Bidirectional RTP/UDP** audio at 24 kHz stereo, AAC-LC codec
 - **Jitter buffer** with packet reordering, loss detection, and packet-repetition concealment
@@ -13,7 +13,7 @@ This project enables standalone broadcast-grade audio transport from a headless 
 
 ## Quick Start
 
-See **[PSA300-Codec-Spec.md](PSA300-Codec-Spec.md)** for the complete from-scratch build and deployment guide.
+See **[BUILD.md](BUILD.md)** for the complete from-scratch build and deployment guide.
 
 ## Project Structure
 
@@ -40,7 +40,7 @@ briclite/
 
 | Parameter | Value |
 |---|---|
-| Remote endpoint | Comrex BRIC-Link at `217.36.229.106:5004` |
+| Remote endpoint | Configurable IP and port (default 5004) |
 | RTP payload type | 14 (MPEG Audio) |
 | Codec | AAC-LC, 24 kHz stereo |
 | RTP framing | 12-byte RTP header + 4-byte RFC2250 header + ADTS payload |
@@ -48,9 +48,9 @@ briclite/
 
 ## Deployment
 
-### On PSA300 (headless appliance):
+### On Ubuntu server (headless):
 1. Install Ubuntu Server 24.04 LTS
-2. Follow deployment steps in PSA300-Codec-Spec.md
+2. Follow deployment steps in BUILD.md
 3. Unit auto-starts on boot via systemd
 
 ### Local development (on this Mac):
@@ -67,21 +67,21 @@ pip install -r requirements.txt
 
 ## Web Dashboard
 
-**Default URL:** `http://172.16.10.213:8080`
+**Default URL:** `http://192.168.1.100:8080` (adjust IP as needed)
 
-- TX Input meters (blue) — microphone/line input from Behringer
-- RX Output meters (green/amber/red) — audio from Comrex
+- TX Input meters (blue) — microphone/line input from USB audio interface
+- RX Output meters (green/amber/red) — audio from remote radio station
 - -18 dBFS reference line (broadcast standard)
 - Jitter and packet-loss statistics
 - Connect/Disconnect controls with optional target IP override
 
 ## Known Limitations
 
-- **OPUS codec** — Supported by Comrex but requires SIP negotiation (not implemented)
+- **OPUS codec** — Supported by some devices but requires SIP negotiation (not implemented)
 - **Loss concealment** — Packet repetition only (no interpolation or algorithmic PLC)
 - **Clock drift** — Not corrected on long sessions (monitored by `audiorate` element)
 
-See Section 12 of PSA300-Codec-Spec.md for future work roadmap.
+See Section 12 of BUILD.md for future work roadmap.
 
 ## License
 
