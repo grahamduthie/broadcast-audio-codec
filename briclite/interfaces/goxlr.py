@@ -31,15 +31,11 @@ _ROUTING = {
     "Samples":    {"Headphones": False, "BroadcastMix": False, "Sampler": False, "LineOut": False, "StreamMix2": False},
 }
 
-# ALSA virtual devices written to ~/.asoundrc on start.
-#
-# goxlr_broadcast (capture): extracts the Broadcast Mix (capture ch 0-1)
-#   from the GoXLR's 21-channel USB capture stream as a stereo source.
-#
-# goxlr_rx (playback): routes a stereo input to two GoXLR playback channel
-#   pairs so each codec RX channel lands on a separate fader:
-#     source ch 0 (RX Left)  → Chat  playback ch 4+5 → Fader D
-#     source ch 1 (RX Right) → Game  playback ch 2+3 → Fader C
+# ALSA virtual device written to ~/.asoundrc on start.
+# goxlr_broadcast (capture): extracts the Broadcast Mix (channels 0-1)
+# from the GoXLR's 21-channel USB capture stream as a stereo source.
+# RX playback routing is handled in GStreamer (see rx_sink_bin) to avoid
+# silent failures with ALSA's route plugin on the 10-channel playback stream.
 _ALSA_CONFIG = """\
 # Written by briclite GoXLRInterface — do not edit manually
 
@@ -54,21 +50,22 @@ pcm.goxlr_broadcast {
         1.1 1.0
     }
 }
-
-pcm.goxlr_rx {
-    type route
-    slave {
-        pcm "hw:GoXLRMini,0"
-        channels 10
-    }
-    ttable {
-        2.1 1.0
-        3.1 1.0
-        4.0 1.0
-        5.0 1.0
-    }
-}
 """
+
+# 2→10 channel expansion matrix for GoXLR playback.
+# Rows = output channels (GoXLR playback), Cols = input channels (codec RX L, R).
+#   ch 0-1: System  — silent
+#   ch 2-3: Game    — RX Right (input ch 1) → Fader C → Broadcast Mix
+#   ch 4-5: Chat    — RX Left  (input ch 0) → Fader D → headphones/line out only
+#   ch 6-7: Music   — silent
+#   ch 8-9: Sample  — silent
+_RX_MATRIX = (
+    "<<0.0,0.0>,<0.0,0.0>,"
+    "<0.0,1.0>,<0.0,1.0>,"
+    "<1.0,0.0>,<1.0,0.0>,"
+    "<0.0,0.0>,<0.0,0.0>,"
+    "<0.0,0.0>,<0.0,0.0>>"
+)
 
 
 class GoXLRInterface(AudioInterface):
@@ -129,8 +126,10 @@ class GoXLRInterface(AudioInterface):
 
     def rx_sink_bin(self) -> str:
         return (
-            "audioresample ! audio/x-raw,rate=48000,channels=2 ! "
-            "alsasink device=goxlr_rx sync=false"
+            f'audioresample ! audio/x-raw,rate=48000,channels=2 ! '
+            f'audiomixmatrix in-channels=2 out-channels=10 matrix="{_RX_MATRIX}" ! '
+            f'audioconvert ! audio/x-raw,format=S32LE ! '
+            f'alsasink device=hw:GoXLRMini,0 sync=false'
         )
 
     def start(self) -> None:

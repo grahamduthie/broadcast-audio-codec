@@ -291,7 +291,53 @@ Ensures immediate startup without waiting for PREROLL state. Important for live 
 
 ---
 
-## 9. Current Limitations
+## 9. AudioInterface Plugin System
+
+The audio I/O layer is abstracted behind an `AudioInterface` ABC (`interfaces/base.py`). This allows Behringer UCA202 and GoXLR Mini deployments to share one codebase, with the active interface selected at runtime.
+
+### Interface contract
+
+```python
+class AudioInterface(ABC):
+    def tx_source_bin(self) -> str: ...  # GStreamer bin: produces audio/x-raw,rate≥44100,channels=2
+    def rx_sink_bin(self)  -> str: ...  # GStreamer bin: accepts audio/x-raw,rate=44100,channels=2
+    def start(self) -> None: ...         # Called when codec pipeline starts
+    def stop(self)  -> None: ...         # Called when codec pipeline stops
+```
+
+`PipelineController` slots the return values directly into the TX and RX pipeline strings. Each interface owns its own hardware setup, ALSA config, and daemon communication.
+
+### BehringerInterface
+
+Wraps the original behaviour exactly. TX source: `alsasrc device=hw:0,0 ! audioconvert ! audio/x-raw,rate=44100,channels=2`. RX sink: `alsasink device=hw:0,0 sync=false`.
+
+### GoXLRInterface
+
+Used when a GoXLR Mini is present. On `start()`:
+1. Writes an ALSA `route` virtual device (`goxlr_broadcast`) to `~/.asoundrc` to extract the 2-channel Broadcast Mix from the 21-channel USB capture stream
+2. Connects to the goxlr-utility daemon (`/tmp/goxlr.socket`) and retrieves the device serial
+3. Applies fader assignments, routing matrix, and cyan gradient lighting via daemon IPC
+
+**TX:** `alsasrc device=goxlr_broadcast ! audioconvert ! audio/x-raw,rate=48000,channels=2`
+
+**RX:** The ALSA `route` plugin cannot reliably expand 2 channels to the GoXLR's 10-channel playback stream (silent failure; the device accepts S32LE only and ALSA's constraint propagation is broken for this asymmetric case). Instead, GStreamer's `audiomixmatrix` expands the decoded stereo stream to 10 channels before writing directly to `hw:GoXLRMini,0`:
+
+```
+audioresample ! audio/x-raw,rate=48000,channels=2 !
+audiomixmatrix in-channels=2 out-channels=10 matrix="<...>" !
+audioconvert ! audio/x-raw,format=S32LE !
+alsasink device=hw:GoXLRMini,0 sync=false
+```
+
+### Auto-detection and hotplug
+
+`main.py` selects the interface at startup (`audio_interface: auto` in config — default) and monitors for changes every 5 seconds. If GoXLR presence changes, the interface is hot-swapped; any active pipeline is stopped first. The web UI badge (`GoXLR` / `Behringer`) reflects the current mode via WebSocket telemetry.
+
+The goxlr-utility daemon (`goxlr-daemon.service`) must be running for GoXLR mode to activate. The daemon is detected by probing `/tmp/goxlr.socket`. See `GOXLR-MINI-LINUX.md` for full daemon setup.
+
+---
+
+## 10. Current Limitations
 
 **Codec auto-detection delay:** When connecting, the remote device may show a fallback codec (G.722 VoIP) for 2-3 seconds before recognizing AAC. Disconnect/reconnect resets this.
 
@@ -333,7 +379,7 @@ timeout 10 gst-launch-1.0 alsasrc device=hw:0,0 num-buffers=200 ! fakesink
 
 **Web dashboard:**
 ```
-http://<server-ip>:8080
+http://codec.local
 ```
 
 Check meters for input/output levels. If RX meters are frozen, jitter buffer is stuck (likely receiving incompatible RTP payload — check Comrex codec, do disconnect/reconnect).

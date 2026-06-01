@@ -11,7 +11,7 @@ The TC-Helicon GoXLR Mini is a broadcast audio mixer with:
 - 3.5mm headphone output
 - 3.5mm line input
 - USB-C connection to host (power + audio + control)
-- 4 motorized faders (A, B, C, D)
+- 4 manual faders (A, B, C, D) — **not** motorized (the full GoXLR has motorized faders)
 - Internal DSP mixing matrix: any input can be routed to any output bus
 
 USB IDs: `VID=1220`, `PID=8fe4` (TC Electronic/TC-Helicon)
@@ -80,13 +80,13 @@ The channel-mask is `0x0` because the GoXLR assigns no standard speaker position
 
 ---
 
-## 4. Routing the Broadcast Mix to GStreamer (TX)
+## 4. Routing the Broadcast Mix to GStreamer (TX) — implemented
 
-Because the device presents 21 channels, you cannot simply use `alsasrc device=hw:GoXLRMini,0` and get stereo — you get 21 channels. Two approaches:
+Because the device presents 21 channels, you cannot simply use `alsasrc device=hw:GoXLRMini,0` and get stereo — you get 21 channels.
 
-### Option A — ALSA virtual device (recommended for briclite)
+**Implemented approach: ALSA `route` virtual device**
 
-Define a `route` plugin device in `/etc/asound.conf` that extracts channels 0–1 as stereo:
+`GoXLRInterface.start()` writes the following to `~/.asoundrc`:
 
 ```
 pcm.goxlr_broadcast {
@@ -102,48 +102,56 @@ pcm.goxlr_broadcast {
 }
 ```
 
-Then use `alsasrc device=goxlr_broadcast` in GStreamer. This is transparent to the pipeline — it sees a normal stereo 48 kHz source. The `GoXLRInterface.start()` method should write this config and verify it before the pipeline launches.
-
-### Option B — GStreamer deinterleave/interleave
-
-```
-alsasrc device=hw:GoXLRMini,0 ! deinterleave name=d
-d.src_0 ! queue ! interleave name=i
-d.src_1 ! queue ! i.
-i. ! audioconvert ! audio/x-raw,rate=44100,channels=2 ! ...
-```
-
-Cannot be expressed as a linear `parse_launch` string — requires programmatic pad linking. More complex, no advantage over Option A.
+GStreamer then uses `alsasrc device=goxlr_broadcast` and sees a normal stereo 48 kHz S32LE source. **Confirmed working on PSA300.**
 
 ---
 
-## 5. Routing Codec RX to GoXLR Inputs (RX)
+## 5. Routing Codec RX to GoXLR Inputs (RX) — implemented
 
-The codec receives decoded stereo audio from the remote end. With the GoXLR, you can route the left and right channels to **separate GoXLR input buses**, so they appear on independent faders and can be independently mixed into headphones, broadcast, etc.
+The codec receives decoded stereo audio from the remote end. Each channel is routed to a separate GoXLR input bus so they appear on independent faders.
 
-Example assignment (configurable):
-- Codec RX Left → Game bus (playback channels 2–3)
-- Codec RX Right → Chat bus (playback channels 4–5)
+**Implemented assignment:**
+- Codec RX Right → Game bus (playback ch 2–3) → Fader C → Broadcast Mix + LineOut + Headphones
+- Codec RX Left  → Chat bus (playback ch 4–5) → Fader D → LineOut + Headphones only
 
-Implementation: the RX pipeline outputs 2-channel audio, then an ALSA virtual device (or direct channel addressing) places each channel into the correct pair of the 10-channel playback stream.
+### ALSA route plugin does NOT work for 10-channel playback
 
-ALSA `route` example for RX:
+The intuitive approach — an ALSA `route` plugin mapping 2 channels to `hw:GoXLRMini,0` at 10 channels — silently fails. The device presents this to ALSA:
 
 ```
-pcm.goxlr_rx {
-    type route
-    slave {
-        pcm "hw:GoXLRMini,0"
-        channels 10
-    }
-    ttable {
-        2.0 1.0   # codec RX L → Game L (ch 2)
-        3.1 1.0   # codec RX R → Chat L (ch 4 — note: adjust indices per config)
-    }
-}
+FORMAT:   S32_LE   (only)
+CHANNELS: [1 89478485]   (anomalous range — route plugin constraint propagation issue)
 ```
 
-The specific channel pairs are user-configurable and stored under `"goxlr"` in `config.json`.
+Even with explicit `format=S32LE` in GStreamer, audio does not reach the hardware. Root cause: the ALSA `route` plugin does not correctly handle the 2→10 channel asymmetry on this device.
+
+### GStreamer audiomixmatrix — confirmed working
+
+Use GStreamer's `audiomixmatrix` to expand the 2-channel decoded stream to 10 channels before writing directly to `hw:GoXLRMini,0`:
+
+```
+audioresample ! audio/x-raw,rate=48000,channels=2 !
+audiomixmatrix in-channels=2 out-channels=10 matrix="<matrix>" !
+audioconvert ! audio/x-raw,format=S32LE !
+alsasink device=hw:GoXLRMini,0 sync=false
+```
+
+The 10×2 matrix (rows = GoXLR output channels, cols = codec RX channels):
+
+```
+<<0.0,0.0>,   # ch 0  System L  — silent
+ <0.0,0.0>,   # ch 1  System R  — silent
+ <0.0,1.0>,   # ch 2  Game L    — RX Right
+ <0.0,1.0>,   # ch 3  Game R    — RX Right
+ <1.0,0.0>,   # ch 4  Chat L    — RX Left
+ <1.0,0.0>,   # ch 5  Chat R    — RX Left
+ <0.0,0.0>,   # ch 6  Music L   — silent
+ <0.0,0.0>,   # ch 7  Music R   — silent
+ <0.0,0.0>,   # ch 8  Sample L  — silent
+ <0.0,0.0>>   # ch 9  Sample R  — silent
+```
+
+The `audioconvert ! audio/x-raw,format=S32LE` step is required — the GoXLR playback interface accepts **S32LE only** and will silently discard audio in any other format.
 
 ---
 
@@ -292,80 +300,75 @@ def recv_response(sock) -> dict:
 
 ---
 
-## 10. briclite Integration Plan
-
-### Interface module
+## 10. briclite Implementation — as built
 
 `briclite/interfaces/goxlr.py` implements `AudioInterface` (see `interfaces/base.py`).
 
-**`start()`:**
-1. Connect to goxlr-utility daemon via Unix socket
-2. Retrieve device serial
-3. Apply routing matrix config from `config["goxlr"]` (fader assignments, broadcast mix membership, line out sources)
-4. Write ALSA virtual device config to `/etc/asound.conf` (or `~/.asoundrc`) for `goxlr_broadcast` (capture ch 0–1) and `goxlr_rx` (playback channel pairs)
+### Auto-detection and hotplug
 
-**`tx_source_bin()`:**
+`GoXLRInterface.is_available()` returns `True` if `/tmp/goxlr.socket` exists, is connectable, and `GetStatus` returns at least one mixer. `main.py` calls this at startup and every 5 seconds from a background task. If presence changes, the interface is hot-swapped and any active pipeline is stopped. The web UI badge updates via WebSocket telemetry.
+
+Config key `system.audio_interface` accepts `"auto"` (default), `"goxlr"`, or `"behringer"`. In auto mode, GoXLR takes priority.
+
+### Fader layout (fixed, applied on every `start()`)
+
+| Fader | Source | Broadcast Mix | LineOut | Headphones |
+|---|---|---|---|---|
+| A | Mic (XLR) | ✓ | ✓ | ✓ |
+| B | LineIn | ✓ | ✓ | ✓ |
+| C | Game (codec RX Right) | ✓ | ✓ | ✓ |
+| D | Chat (codec RX Left) | — | ✓ | ✓ |
+
+All other GoXLR input buses (Music, Console, System, Samples) are fully unrouted.
+
+### `start()`
+1. Write `~/.asoundrc` with the `goxlr_broadcast` virtual capture device
+2. Connect to daemon socket, retrieve device serial
+3. Apply fader assignments via `SetFader`
+4. Apply full routing matrix via `SetRouter` (all 8 sources × 5 outputs)
+5. Apply cyan gradient lighting via `SetFaderDisplayStyle` + `SetFaderColours`
+
+### `tx_source_bin()`
 ```python
-return "alsasrc device=goxlr_broadcast ! audioconvert ! audio/x-raw,rate=44100,channels=2"
+return "alsasrc device=goxlr_broadcast ! audioconvert ! audio/x-raw,rate=48000,channels=2"
 ```
 
-**`rx_sink_bin()`:**
+### `rx_sink_bin()`
 ```python
-return "alsasink device=goxlr_rx sync=false"
+# Expands decoded stereo to 10-channel GoXLR playback using GStreamer audiomixmatrix.
+# GoXLR requires S32LE — audioconvert must be applied before alsasink.
+return (
+    'audioresample ! audio/x-raw,rate=48000,channels=2 ! '
+    'audiomixmatrix in-channels=2 out-channels=10 matrix="<...>" ! '
+    'audioconvert ! audio/x-raw,format=S32LE ! '
+    'alsasink device=hw:GoXLRMini,0 sync=false'
+)
 ```
 
-**`stop()`:**
-- Optionally reset fader assignments or routing to a safe default
-- Close daemon socket
+### IPC — direct socket, no third-party library
 
-### Config structure (`config.json` with GoXLR)
-
-```json
-{
-  "system": {
-    "audio_interface": "goxlr",
-    "web_port": 8080,
-    "bind_address": "0.0.0.0"
-  },
-  "audio_network": {
-    "target_ip": "...",
-    "tx_port": 5004,
-    "rx_port": 5004,
-    "buffer_ms": 200
-  },
-  "goxlr": {
-    "alsa_device": "hw:GoXLRMini,0",
-    "broadcast_mix_channels": [0, 1],
-    "rx_left_channels": [2, 3],
-    "rx_right_channels": [4, 5],
-    "fader_assignments": {
-      "A": "Mic",
-      "B": "Game",
-      "C": "Chat",
-      "D": "Music"
-    },
-    "broadcast_mix_sources": ["Mic", "Game", "Music"],
-    "line_out_sources": ["Mic", "Chat"]
-  }
-}
-```
-
-### ALSA note: device name stability
-
-Use `hw:GoXLRMini,0` (name-based) rather than `hw:2,0` (index-based) in config. Card indices change if devices are plugged in a different order or if other USB audio devices are present. Name-based addressing is stable.
+All daemon communication uses raw Unix socket with the `[uint32 length][JSON]` framing. `goxlr-py` was not used — the raw approach has no dependencies and the protocol is simple enough. Open a new socket per command (no persistent connection needed).
 
 ---
 
-## 11. Routing Matrix Reference
+## 11. Routing Matrix Reference and Caveats
 
 The GoXLR Mini's internal matrix connects inputs (rows) to output buses (columns). The daemon's `SetRouter` command toggles individual crosspoints.
 
-**Input sources:** Mic, Chat, Music, Game, System, Sample, LineIn, Headphones  
-**Output buses:** Headphones, BroadcastMix, ChatMic, Sampler, LineOut
+**Input sources (IPC names):** `Microphone`, `Chat`, `Music`, `Game`, `Console`, `LineIn`, `System`, `Samples`  
+**Output buses:** `Headphones`, `BroadcastMix`, `ChatMic`, `Sampler`, `LineOut`, `StreamMix2`
 
-Each crosspoint is a boolean (on/off). Volume for each source is set separately with `SetVolume`.
+Note the naming difference: fader assignment uses `Mic` (short), but routing uses `Microphone` (full).
 
-The full matrix state is returned by `GetStatus` and can be applied in bulk at startup from config.
+Each crosspoint is boolean (on/off). Volume is set separately with `SetVolume`. The full matrix state is returned by `GetStatus`.
+
+### Mini-specific routing restrictions
+
+The GoXLR **Mini** has a reduced routing matrix compared to the full GoXLR. Some crosspoints that appear in `GetStatus` cannot be set via `SetRouter` — the daemon returns `Invalid Route` if you try. Confirmed invalid crosspoints on the Mini:
+
+- `Chat → ChatMic` — always fixed, cannot be toggled
+
+When applying a routing matrix, **omit `ChatMic` from all rows** to avoid these errors. The Sampler output also has restrictions on some Mini firmware versions.
 
 ---
 
