@@ -267,6 +267,27 @@ sudo journalctl -u briclite -n 50 | grep ERROR
 
 ---
 
+## Issue: Audio loops/repeats after switching RX channel routing
+
+### Symptom
+After clicking Left Only / Right Only / L+R Stereo, the same half-second of audio repeats continuously.
+
+### Cause
+Switching the channel routing mode rebuilds the RX GStreamer pipeline. If the old pipeline has not fully released the ALSA device before the new one opens it, ALSA gets stuck replaying buffered audio. This can be triggered by clicking rapidly between modes.
+
+### Solution
+Restart the service to clear the ALSA state:
+```bash
+sudo systemctl restart briclite
+```
+
+The code uses a 250ms debounce and blocks on `get_state()` after `set_state(NULL)` to prevent this race. If it recurs, increase the debounce delay in `set_rx_channel_mode` in `pipeline_manager.py`.
+
+### Prevention
+Avoid clicking channel routing buttons in rapid succession. Wait for the brief audio interruption (≈0.5s) to complete before clicking again.
+
+---
+
 ## Issue: Audio crackling or dropping out
 
 ### Possible causes:

@@ -117,7 +117,8 @@ class PipelineController:
         self.rtp_ts     = random.randint(0, 0xFFFFFFFF)
         self.rtp_ssrc   = random.randint(0, 0xFFFFFFFF)
 
-        self.rx_channel_mode = "stereo"
+        self.rx_channel_mode  = "stereo"
+        self._rx_rebuild_timer = None
         self.jitter_buf  = JitterBuffer(latency_ms=self.latency_ms)
         self.tx_pipeline = None
         self.rx_pipeline = None
@@ -196,6 +197,9 @@ class PipelineController:
 
     def stop(self, event_loop):
         self.is_active = False
+        if self._rx_rebuild_timer:
+            self._rx_rebuild_timer.cancel()
+            self._rx_rebuild_timer = None
         self.tx_pipeline.set_state(Gst.State.NULL)
         self.rx_pipeline.set_state(Gst.State.NULL)
         self.glib_loop.quit()
@@ -219,7 +223,18 @@ class PipelineController:
         self.rx_channel_mode = mode
         if not self.is_active:
             return
-        self.rx_pipeline.set_state(Gst.State.NULL)
+        if self._rx_rebuild_timer:
+            self._rx_rebuild_timer.cancel()
+        self._rx_rebuild_timer = threading.Timer(0.25, self._do_rx_rebuild)
+        self._rx_rebuild_timer.start()
+
+    def _do_rx_rebuild(self):
+        if not self.is_active:
+            return
+        mode = self.rx_channel_mode
+        old = self.rx_pipeline
+        old.set_state(Gst.State.NULL)
+        old.get_state(Gst.SECOND)          # block until ALSA is released
         self.rx_pipeline, self.rx_appsrc = self._build_rx_pipeline(mode)
         self.rx_pipeline.set_state(Gst.State.PLAYING)
 

@@ -187,27 +187,52 @@ appsrc (fed by Python playout loop)
 
 ---
 
-## 5. Web Dashboard
+## 5. RX Channel Routing
+
+The incoming AAC stream is dual-mono: the left and right channels carry independent audio. A channel routing selector allows monitoring either channel independently or both together.
+
+**GStreamer element:** `audiomixmatrix` (gst-plugins-bad) with a 2×2 matrix:
+
+| Mode | Matrix | Effect |
+|---|---|---|
+| Stereo | `[[1,0],[0,1]]` | Passthrough |
+| Left only | `[[1,0],[1,0]]` | Left channel → both outputs |
+| Right only | `[[0,1],[0,1]]` | Right channel → both outputs |
+
+**Runtime mode changes:** The matrix is baked into the pipeline string at creation. Changing mode tears down the RX pipeline and rebuilds it with a new string. TX pipeline and jitter buffer are unaffected.
+
+**Why not set the matrix property at runtime?**
+`Gst.util_set_object_arg` on a playing `audioconvert` element caused caps renegotiation that destabilised the pipeline. Rebuilding is simpler and more reliable.
+
+**Race condition protection:** Two measures prevent ALSA from getting stuck when modes are changed rapidly:
+1. **Debounce (250ms):** rapid calls cancel and reschedule — only the final mode gets applied.
+2. **`get_state(Gst.SECOND)`:** blocks until the old pipeline has fully released the ALSA device before the new one opens it. Without this, overlapping ALSA opens caused the playout buffer to loop.
+
+**API:** `POST /api/rx_mode` with `{"mode": "stereo"|"left"|"right"}`. Mode is stored in `global_state` and restored on reconnect.
+
+---
+
+## 6. Web Dashboard
 
 **Real-time Updates:**
 - WebSocket at `/ws/telemetry` — 100ms polling interval
-- Sends: connection status, peak levels, jitter, lost/late packet counts
+- Sends: connection status, peak levels, jitter, lost/late packet counts, `rx_channel_mode`
 
-**Display:**
-- TX Input (blue meters) — dBFS from microphone input
-- RX Output (green/amber/red meters) — dBFS from remote audio
-- -18 dBFS alignment line — broadcast standard reference level (0 PPM)
-- Rolling jitter chart — last 30 seconds of jitter values
-- Packet loss counter
+**Meter styles (toggle between):**
+
+*Digital:* Vertical bar meters with dBFS scale ruler. TX Input (blue gradient), RX Output (green/amber/red gradient). -18 dBFS alignment line at 70% height.
+
+*Analogue:* SVG needle meters, one per channel (TX-L, TX-R, RX-L, RX-R). Styled after a broadcast VU meter: beige face, colour-coded arc zones (green -60→-10, yellow -10→-1, red -1→+6), layered needle with cubic-bezier spring animation (130ms), cyan peak-hold dot (3-second hold). SVG paths computed from the same constants and math as the reference implementation at `grahamduthie/mfm-meter`. Meter type preference is saved in `localStorage`.
 
 **Controls:**
 - Connect button — starts both pipelines, opens UDP socket
 - Disconnect button — halts pipelines, closes socket
 - Optional IP override field — allows changing `target_ip` at runtime
+- RX Channel Routing — L+R Stereo / Left Only / Right Only
 
 ---
 
-## 6. Key Design Decisions
+## 7. Key Design Decisions
 
 ### Why PT=14 + RFC2250 instead of OPUS?
 
@@ -250,7 +275,7 @@ Ensures immediate startup without waiting for PREROLL state. Important for live 
 
 ---
 
-## 7. Threading Model
+## 8. Threading Model
 
 | Thread | Purpose | Notes |
 |---|---|---|
@@ -266,7 +291,7 @@ Ensures immediate startup without waiting for PREROLL state. Important for live 
 
 ---
 
-## 8. Current Limitations
+## 9. Current Limitations
 
 **Codec auto-detection delay:** When connecting, the remote device may show a fallback codec (G.722 VoIP) for 2-3 seconds before recognizing AAC. Disconnect/reconnect resets this.
 
@@ -280,7 +305,7 @@ Ensures immediate startup without waiting for PREROLL state. Important for live 
 
 ---
 
-## 9. Testing & Debugging
+## 10. Testing & Debugging
 
 **Check live state:**
 ```bash
@@ -315,7 +340,7 @@ Check meters for input/output levels. If RX meters are frozen, jitter buffer is 
 
 ---
 
-## 10. Performance Characteristics
+## 11. Performance Characteristics
 
 | Metric | Value | Notes |
 |---|---|---|
@@ -328,7 +353,7 @@ Check meters for input/output levels. If RX meters are frozen, jitter buffer is 
 
 ---
 
-## Future Roadmap
+## 12. Future Roadmap
 
 1. **OPUS with SIP negotiation** — Better for poor links, requires SIP library
 2. **Improved loss concealment** — Interpolation or algorithmic PLC in C

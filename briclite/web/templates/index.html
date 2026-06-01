@@ -22,33 +22,11 @@
         .meter-with-scale { display: flex; gap: 4px; align-items: stretch; }
 
         /* dBFS scale ruler */
-        .db-scale {
-            position: relative;
-            width: 28px;
-            height: 260px;
-            flex-shrink: 0;
-        }
-        .db-tick {
-            position: absolute;
-            right: 0;
-            display: flex;
-            align-items: center;
-            gap: 3px;
-            transform: translateY(-50%);
-        }
-        .db-tick-line {
-            width: 6px;
-            height: 1px;
-            background: #555;
-        }
+        .db-scale { position: relative; width: 28px; height: 260px; flex-shrink: 0; }
+        .db-tick { position: absolute; right: 0; display: flex; align-items: center; gap: 3px; transform: translateY(-50%); }
+        .db-tick-line { width: 6px; height: 1px; background: #555; }
         .db-tick-line.align { background: #ef9a9a; width: 8px; }
-        .db-tick-label {
-            font-size: 8px;
-            color: #666;
-            text-align: right;
-            width: 20px;
-            white-space: nowrap;
-        }
+        .db-tick-label { font-size: 8px; color: #666; text-align: right; width: 20px; white-space: nowrap; }
         .db-tick-label.align { color: #ef9a9a; font-weight: bold; }
 
         /* Meter bars */
@@ -57,25 +35,26 @@
         .fill { position: absolute; bottom: 0; width: 100%; transition: height 0.1s linear; border-radius: 2px; }
         .fill-tx { background: linear-gradient(to top, #1565c0 70%, #42a5f5 88%, #e3f2fd 100%); }
         .fill-rx { background: linear-gradient(to top, #2e7d32 70%, #fbc02d 85%, #d32f2f 100%); }
-
-        /* -18dBFS alignment marker line across the bar */
-        .bar::after {
-            content: '';
-            position: absolute;
-            left: 0; right: 0;
-            bottom: 70%;   /* -18dBFS = 70% height */
-            height: 1px;
-            background: rgba(239,154,154,0.5);
-            pointer-events: none;
-        }
+        .bar::after { content: ''; position: absolute; left: 0; right: 0; bottom: 70%; height: 1px; background: rgba(239,154,154,0.5); pointer-events: none; }
 
         .chan-label { font-size: 9px; color: #555; text-align: center; margin-top: 2px; }
         .divider { width: 1px; background: #333; align-self: stretch; margin: 0 4px; }
+
+        /* Segmented buttons (channel routing + meter type) */
         .btn-mode { flex: 1; padding: 8px 4px; font-size: 12px; font-weight: bold; border: 1px solid #555; background: #2a2a2a; color: #aaa; cursor: pointer; }
         .btn-mode:first-child { border-radius: 4px 0 0 4px; }
         .btn-mode:last-child  { border-radius: 0 4px 4px 0; }
         .btn-mode + .btn-mode { border-left: none; }
         .btn-mode.active { background: #1565c0; color: #fff; border-color: #1565c0; }
+
+        /* Analogue meters */
+        .am-row { display: flex; gap: 8px; margin-top: 4px; }
+        .am-wrap { display: flex; flex-direction: column; }
+        .am-box { width: 200px; height: 111px; }
+        .am-labels { display: flex; justify-content: space-between; align-items: center; font-size: 10px; padding: 2px 4px; }
+        .am-db   { color: #666; width: 52px; }
+        .am-chan { color: #888; font-weight: bold; }
+        .am-peak { color: #41e3ff; text-align: right; width: 64px; }
     </style>
 </head>
 <body>
@@ -89,7 +68,7 @@
             <button class="btn btn-stop"  onclick="fetch('/api/disconnect', {method:'POST'})">DISCONNECT LINK</button>
             <div style="margin: 10px 0 12px;">
                 <label>RX Channel Routing</label>
-                <div style="display:flex; margin-top:6px;">
+                <div id="chan-mode-btns" style="display:flex; margin-top:6px;">
                     <button class="btn-mode active" id="mode-stereo" onclick="setChannelMode('stereo')">L+R STEREO</button>
                     <button class="btn-mode"        id="mode-left"   onclick="setChannelMode('left')">LEFT ONLY</button>
                     <button class="btn-mode"        id="mode-right"  onclick="setChannelMode('right')">RIGHT ONLY</button>
@@ -101,51 +80,102 @@
             <div>Lost Packets: <span id="lbl-lost" class="stat-val" style="color:#d32f2f;">0</span></div>
         </div>
         <div class="card">
-            <h3>Audio Levels &amp; Network Performance</h3>
-            <div style="display:flex; gap:32px; align-items:flex-start;">
-                <div class="meters-row">
-
-                    <!-- TX Input -->
-                    <div class="meter-group">
-                        <div class="meter-label">TX Input</div>
-                        <div class="meter-with-scale">
-                            <div class="db-scale" id="scale-tx"></div>
-                            <div class="meter-container">
-                                <div style="display:flex;flex-direction:column;align-items:center;">
-                                    <div class="bar"><div id="meter-tx-l" class="fill fill-tx"></div></div>
-                                    <div class="chan-label">L</div>
-                                </div>
-                                <div style="display:flex;flex-direction:column;align-items:center;">
-                                    <div class="bar"><div id="meter-tx-r" class="fill fill-tx"></div></div>
-                                    <div class="chan-label">R</div>
-                                </div>
-                            </div>
-                        </div>
-                        <div id="lbl-tx-db" style="font-size:11px;color:#666;text-align:center;margin-top:2px;">— dBFS</div>
-                    </div>
-
-                    <div class="divider"></div>
-
-                    <!-- RX Output -->
-                    <div class="meter-group">
-                        <div class="meter-label">RX Output</div>
-                        <div class="meter-with-scale">
-                            <div class="db-scale" id="scale-rx"></div>
-                            <div class="meter-container">
-                                <div style="display:flex;flex-direction:column;align-items:center;">
-                                    <div class="bar"><div id="meter-rx-l" class="fill fill-rx"></div></div>
-                                    <div class="chan-label">L</div>
-                                </div>
-                                <div style="display:flex;flex-direction:column;align-items:center;">
-                                    <div class="bar"><div id="meter-rx-r" class="fill fill-rx"></div></div>
-                                    <div class="chan-label">R</div>
-                                </div>
-                            </div>
-                        </div>
-                        <div id="lbl-rx-db" style="font-size:11px;color:#666;text-align:center;margin-top:2px;">— dBFS</div>
-                    </div>
-
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                <h3 style="margin:0;">Audio Levels &amp; Network Performance</h3>
+                <div id="meter-type-btns" style="display:flex;">
+                    <button class="btn-mode active" id="mt-digital"  onclick="setMeterType('digital')">DIGITAL</button>
+                    <button class="btn-mode"        id="mt-analogue" onclick="setMeterType('analogue')">ANALOGUE</button>
                 </div>
+            </div>
+            <div style="display:flex; gap:32px; align-items:flex-start;">
+
+                <!-- Digital meters -->
+                <div id="meters-digital">
+                    <div class="meters-row">
+                        <div class="meter-group">
+                            <div class="meter-label">TX Input</div>
+                            <div class="meter-with-scale">
+                                <div class="db-scale" id="scale-tx"></div>
+                                <div class="meter-container">
+                                    <div style="display:flex;flex-direction:column;align-items:center;">
+                                        <div class="bar"><div id="meter-tx-l" class="fill fill-tx"></div></div>
+                                        <div class="chan-label">L</div>
+                                    </div>
+                                    <div style="display:flex;flex-direction:column;align-items:center;">
+                                        <div class="bar"><div id="meter-tx-r" class="fill fill-tx"></div></div>
+                                        <div class="chan-label">R</div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div id="lbl-tx-db" style="font-size:11px;color:#666;text-align:center;margin-top:2px;">— dBFS</div>
+                        </div>
+                        <div class="divider"></div>
+                        <div class="meter-group">
+                            <div class="meter-label">RX Output</div>
+                            <div class="meter-with-scale">
+                                <div class="db-scale" id="scale-rx"></div>
+                                <div class="meter-container">
+                                    <div style="display:flex;flex-direction:column;align-items:center;">
+                                        <div class="bar"><div id="meter-rx-l" class="fill fill-rx"></div></div>
+                                        <div class="chan-label">L</div>
+                                    </div>
+                                    <div style="display:flex;flex-direction:column;align-items:center;">
+                                        <div class="bar"><div id="meter-rx-r" class="fill fill-rx"></div></div>
+                                        <div class="chan-label">R</div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div id="lbl-rx-db" style="font-size:11px;color:#666;text-align:center;margin-top:2px;">— dBFS</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Analogue meters -->
+                <div id="analogue-meters" style="display:none; flex-direction:column; gap:10px;">
+                    <div>
+                        <div class="meter-label">TX Input</div>
+                        <div class="am-row">
+                            <div class="am-wrap">
+                                <div class="am-box" id="am-box-tx-l"></div>
+                                <div class="am-labels">
+                                    <span id="am-rms-tx-l" class="am-db">—</span>
+                                    <span class="am-chan">L</span>
+                                    <span id="am-pklbl-tx-l" class="am-peak">Peak —</span>
+                                </div>
+                            </div>
+                            <div class="am-wrap">
+                                <div class="am-box" id="am-box-tx-r"></div>
+                                <div class="am-labels">
+                                    <span id="am-rms-tx-r" class="am-db">—</span>
+                                    <span class="am-chan">R</span>
+                                    <span id="am-pklbl-tx-r" class="am-peak">Peak —</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div>
+                        <div class="meter-label">RX Output</div>
+                        <div class="am-row">
+                            <div class="am-wrap">
+                                <div class="am-box" id="am-box-rx-l"></div>
+                                <div class="am-labels">
+                                    <span id="am-rms-rx-l" class="am-db">—</span>
+                                    <span class="am-chan">L</span>
+                                    <span id="am-pklbl-rx-l" class="am-peak">Peak —</span>
+                                </div>
+                            </div>
+                            <div class="am-wrap">
+                                <div class="am-box" id="am-box-rx-r"></div>
+                                <div class="am-labels">
+                                    <span id="am-rms-rx-r" class="am-db">—</span>
+                                    <span class="am-chan">R</span>
+                                    <span id="am-pklbl-rx-r" class="am-peak">Peak —</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Jitter chart -->
                 <div style="flex-grow:1; height:280px;">
                     <canvas id="jitterChart"></canvas>
@@ -155,35 +185,28 @@
     </div>
 
     <script>
-        // dBFS → bar fill percentage (linear: -60dBFS=0%, 0dBFS=100%)
+        // ─── Digital meter helpers ────────────────────────────────────────────
         function dbToPct(db) {
             return Math.max(0, Math.min(100, (db + 60) * 1.667));
         }
 
-        // Build dB scale rulers
-        // Ticks: label, dBFS value, isAlignmentPoint
         const TICKS = [
             { label: '0',   db:   0, align: false },
             { label: '-6',  db:  -6, align: false },
             { label: '-12', db: -12, align: false },
-            { label: '-18', db: -18, align: true  },  // Broadcast alignment (0 PPM)
+            { label: '-18', db: -18, align: true  },
             { label: '-24', db: -24, align: false },
             { label: '-36', db: -36, align: false },
             { label: '-54', db: -54, align: false },
         ];
-
         function buildScale(containerId) {
             const el = document.getElementById(containerId);
-            const height = 260; // matches .meter-container height
+            const height = 260;
             TICKS.forEach(t => {
-                const pct = dbToPct(t.db);
-                const bottomPx = (pct / 100) * height;
-                const topPx = height - bottomPx;
+                const bottomPx = (dbToPct(t.db) / 100) * height;
                 const tick = document.createElement('div');
                 tick.className = 'db-tick';
                 tick.style.bottom = bottomPx + 'px';
-                tick.style.top = 'auto';
-                // Reposition using bottom
                 tick.style.transform = 'translateY(50%)';
                 tick.innerHTML =
                     `<span class="db-tick-label${t.align ? ' align' : ''}">${t.label}</span>` +
@@ -194,26 +217,162 @@
         buildScale('scale-tx');
         buildScale('scale-rx');
 
+        // ─── Analogue meter (ported from grahamduthie/mfm-meter) ─────────────
+        const AM = {
+            MIN: -60, MAX: 6, S: -58, E: 58,
+            R: 105, CX: 160, CY: 165, W: 320, H: 178,
+            get NCY() { return this.CY - 10; },
+            get NL()  { return this.R - 8; },
+            angle(dB) {
+                dB = Math.max(this.MIN, Math.min(this.MAX, dB));
+                return ((dB - this.MIN) / (this.MAX - this.MIN)) * (this.E - this.S) + this.S;
+            },
+            xy(cx, cy, r, deg) {
+                const rad = (deg - 90) * Math.PI / 180;
+                return [cx + r * Math.cos(rad), cy + r * Math.sin(rad)];
+            },
+            arc(cx, cy, r, a1, a2) {
+                const [x1, y1] = this.xy(cx, cy, r, a1);
+                const [x2, y2] = this.xy(cx, cy, r, a2);
+                return `M ${x1.toFixed(2)} ${y1.toFixed(2)} A ${r} ${r} 0 ${a2 - a1 > 180 ? 1 : 0} 1 ${x2.toFixed(2)} ${y2.toFixed(2)}`;
+            }
+        };
+
+        const amPeak = {};
+        const PEAK_HOLD_MS = 3000;
+        function amGetPeak(uid, val) {
+            const now = Date.now();
+            const s = amPeak[uid] || (amPeak[uid] = { v: AM.MIN, t: 0 });
+            if (val > s.v || now - s.t > PEAK_HOLD_MS) { s.v = val; s.t = now; }
+            return s.v;
+        }
+
+        function amBuildSVG(uid) {
+            const {MIN, MAX, S, E, R, CX, CY, W, H, NCY, NL} = AM;
+            const f = n => n.toFixed(2);
+            const initA = AM.angle(MIN);
+            const tip = AM.xy(CX, NCY, NL, initA);
+            const mid = AM.xy(CX, NCY, NL - 16, initA);
+            const ref = AM.xy(CX, NCY, NL - 25, initA);
+            const pk  = AM.xy(CX, CY, R + 9, initA);
+            const TR  = 'x2 0.13s cubic-bezier(.285,1.65,.57,1.01),y2 0.13s cubic-bezier(.285,1.65,.57,1.01)';
+
+            const zones = [[MIN,-10,'#84cc16'],[-10,-1,'#facc15'],[-1,MAX,'#ef4444']]
+                .map(([a,b,c]) => `<path d="${AM.arc(CX,CY,R,AM.angle(a),AM.angle(b))}" stroke="${c}" stroke-width="16" fill="none" opacity="0.85"/>`)
+                .join('');
+
+            const MAJOR_DB = new Set([-60,-50,-40,-30,-20,-10,-6,-3,0,3,6]);
+            const SHOWN = [[-60,'-60'],[-50,'-50'],[-40,'-40'],[-30,'-30'],[-20,'-20'],[-10,'-10'],[0,'0'],[6,'+6']];
+            const ticks = SHOWN.map(([db, lbl]) => {
+                const a = AM.angle(db);
+                const [ix,iy] = AM.xy(CX,CY,R-6,a), [ox,oy] = AM.xy(CX,CY,R+18,a), [lx,ly] = AM.xy(CX,CY,R+35,a);
+                const col = db >= -1 ? '#ef4444' : db >= -10 ? '#f59e15' : '#59582c';
+                const anc = db === -60 ? 'end' : db === 6 ? 'start' : 'middle';
+                const fs  = db === 0 ? 15 : 13, fw = db === 0 ? 800 : 500;
+                return `<line x1="${f(ix)}" y1="${f(iy)}" x2="${f(ox)}" y2="${f(oy)}" stroke="${col}" stroke-width="2"/>
+<text x="${f(lx)}" y="${f(ly+3)}" font-size="${fs}" font-weight="${fw}" fill="${col}" text-anchor="${anc}" alignment-baseline="middle" style="font-family:'Roboto Mono',monospace;text-shadow:0 0 4px #fff6,0 0 1px #fff7">${lbl}</text>`;
+            }).join('');
+
+            let subs = '';
+            for (let db = MIN+1; db < MAX; db++) {
+                if (MAJOR_DB.has(db)) continue;
+                const a = AM.angle(db);
+                const [x1,y1] = AM.xy(CX,CY,R+2,a), [x2,y2] = AM.xy(CX,CY,R+16,a);
+                const c = db >= -1 ? '#f87171' : db >= -10 ? '#fde047' : '#bdb68c';
+                subs += `<line x1="${f(x1)}" y1="${f(y1)}" x2="${f(x2)}" y2="${f(y2)}" stroke="${c}" stroke-width="1" opacity="0.45"/>`;
+            }
+
+            return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="100%">
+  <defs>
+    <linearGradient id="am-gl-${uid}" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#fff" stop-opacity="0.44" offset="0%"/>
+      <stop stop-color="#fff" stop-opacity="0.02" offset="80%"/>
+    </linearGradient>
+    <radialGradient id="am-fc-${uid}" cx="52%" cy="63%" r="95%">
+      <stop offset="12%" stop-color="#f6f3df"/>
+      <stop offset="86%" stop-color="#e2d7ac"/>
+    </radialGradient>
+  </defs>
+  <rect x="7" y="8" width="${W-14}" height="${H-22}" rx="19" fill="url(#am-fc-${uid})" stroke="#bcac88" stroke-width="4"/>
+  <rect x="2" y="4" width="${W-4}" height="${H-12}" rx="23" fill="none" stroke="#232221" stroke-width="7"/>
+  <ellipse cx="${CX}" cy="${CY-50}" rx="114" ry="27" fill="url(#am-gl-${uid})" opacity="0.28" pointer-events="none"/>
+  ${zones}${ticks}${subs}
+  <circle id="am-pk-${uid}" cx="${f(pk[0])}" cy="${f(pk[1])}" r="3.5" fill="#41e3ff" stroke="#3286ec" stroke-width="1.2" opacity="0"/>
+  <line id="am-n1-${uid}" x1="${CX}" y1="${NCY}" x2="${f(tip[0])}" y2="${f(tip[1])}" stroke="#cc2312" stroke-width="5" stroke-linecap="round" style="transition:${TR}"/>
+  <line id="am-n2-${uid}" x1="${CX}" y1="${NCY}" x2="${f(mid[0])}" y2="${f(mid[1])}" stroke="#ef4444" stroke-width="3.1" stroke-linecap="round" style="transition:${TR}"/>
+  <line id="am-n3-${uid}" x1="${CX}" y1="${NCY}" x2="${f(ref[0])}" y2="${f(ref[1])}" stroke="#fff9" stroke-width="1.1" stroke-linecap="round" opacity="0.35" style="transition:${TR}"/>
+  <circle cx="${CX}" cy="${NCY}" r="14" fill="#efe7ce" stroke="#bb9870" stroke-width="2.7"/>
+  <circle cx="${CX}" cy="${NCY}" r="6.2" fill="#cc2312" stroke="#0006" stroke-width="1.3"/>
+</svg>`;
+        }
+
+        function amUpdate(uid, db, peakDb) {
+            const {CX, CY, R, NCY, NL, MIN, MAX} = AM;
+            const a = AM.angle(db);
+            const tip = AM.xy(CX, NCY, NL, a);
+            const mid = AM.xy(CX, NCY, NL-16, a);
+            const ref = AM.xy(CX, NCY, NL-25, a);
+            const setTip = (id, p) => {
+                const el = document.getElementById(id);
+                if (el) { el.setAttribute('x2', p[0].toFixed(2)); el.setAttribute('y2', p[1].toFixed(2)); }
+            };
+            setTip(`am-n1-${uid}`, tip);
+            setTip(`am-n2-${uid}`, mid);
+            setTip(`am-n3-${uid}`, ref);
+
+            const pk = document.getElementById(`am-pk-${uid}`);
+            if (pk) {
+                if (peakDb > MIN && peakDb <= MAX) {
+                    const pp = AM.xy(CX, CY, R+9, AM.angle(peakDb));
+                    pk.setAttribute('cx', pp[0].toFixed(2));
+                    pk.setAttribute('cy', pp[1].toFixed(2));
+                    pk.setAttribute('opacity', '0.66');
+                } else {
+                    pk.setAttribute('opacity', '0');
+                }
+            }
+            const rmsEl = document.getElementById(`am-rms-${uid}`);
+            const pkEl  = document.getElementById(`am-pklbl-${uid}`);
+            if (rmsEl) rmsEl.textContent = db.toFixed(1) + ' dB';
+            if (pkEl)  pkEl.textContent  = 'Peak ' + peakDb.toFixed(1) + ' dB';
+        }
+
+        function setMeterType(type) {
+            localStorage.setItem('meterMode', type);
+            document.getElementById('meters-digital').style.display  = type === 'digital'  ? '' : 'none';
+            document.getElementById('analogue-meters').style.display = type === 'analogue' ? 'flex' : 'none';
+            document.querySelectorAll('#meter-type-btns .btn-mode').forEach(b => b.classList.remove('active'));
+            document.getElementById('mt-' + type).classList.add('active');
+        }
+
+        // Build SVG for each analogue meter once at load
+        ['tx-l','tx-r','rx-l','rx-r'].forEach(uid => {
+            const el = document.getElementById('am-box-' + uid);
+            if (el) el.innerHTML = amBuildSVG(uid);
+        });
+        setMeterType(localStorage.getItem('meterMode') || 'digital');
+
+        // ─── Controls ────────────────────────────────────────────────────────
         function setChannelMode(mode) {
             fetch('/api/rx_mode', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ mode: mode })
             });
-            document.querySelectorAll('.btn-mode').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('#chan-mode-btns .btn-mode').forEach(b => b.classList.remove('active'));
             document.getElementById('mode-' + mode).classList.add('active');
         }
 
         function connectLink() {
             const ip = document.getElementById('field-ip').value.trim();
-            const body = ip ? JSON.stringify({ target_ip: ip }) : '{}';
             fetch('/api/connect', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: body
+                body: ip ? JSON.stringify({ target_ip: ip }) : '{}'
             });
         }
 
+        // ─── Jitter chart ────────────────────────────────────────────────────
         const ctx = document.getElementById('jitterChart').getContext('2d');
         const jitterChart = new Chart(ctx, {
             type: 'line',
@@ -234,6 +393,7 @@
             }
         });
 
+        // ─── WebSocket telemetry ──────────────────────────────────────────────
         const ws = new WebSocket(`ws://${window.location.host}/ws/telemetry`);
         ws.onmessage = (event) => {
             const d = JSON.parse(event.data);
@@ -243,19 +403,23 @@
             document.getElementById('lbl-jitter').innerText = d.jitter;
             document.getElementById('lbl-lost').innerText   = d.lost;
 
+            // Digital bar meters
             document.getElementById('meter-tx-l').style.height = dbToPct(d.tx_peak_l) + '%';
             document.getElementById('meter-tx-r').style.height = dbToPct(d.tx_peak_r) + '%';
             document.getElementById('meter-rx-l').style.height = dbToPct(d.rx_peak_l) + '%';
             document.getElementById('meter-rx-r').style.height = dbToPct(d.rx_peak_r) + '%';
-
-            // Show peak numeric readout (louder of L/R for each path)
             const txPeak = Math.max(d.tx_peak_l, d.tx_peak_r);
             const rxPeak = Math.max(d.rx_peak_l, d.rx_peak_r);
             document.getElementById('lbl-tx-db').innerText = d.status === 'CONNECTED' ? txPeak.toFixed(1) + ' dBFS' : '— dBFS';
             document.getElementById('lbl-rx-db').innerText = d.status === 'CONNECTED' ? rxPeak.toFixed(1) + ' dBFS' : '— dBFS';
 
+            // Analogue meters
+            const amVals = { 'tx-l': d.tx_peak_l, 'tx-r': d.tx_peak_r, 'rx-l': d.rx_peak_l, 'rx-r': d.rx_peak_r };
+            Object.entries(amVals).forEach(([uid, val]) => amUpdate(uid, val, amGetPeak(uid, val)));
+
+            // Channel routing buttons
             if (d.rx_channel_mode) {
-                document.querySelectorAll('.btn-mode').forEach(b => b.classList.remove('active'));
+                document.querySelectorAll('#chan-mode-btns .btn-mode').forEach(b => b.classList.remove('active'));
                 const modeEl = document.getElementById('mode-' + d.rx_channel_mode);
                 if (modeEl) modeEl.classList.add('active');
             }

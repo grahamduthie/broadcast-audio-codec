@@ -109,6 +109,8 @@ sudo apt install -y \
 ```
 
 > **Important:** `gstreamer1.0-alsa` and `gstreamer1.0-fdkaac` are separate packages on Ubuntu 24.04 — they are NOT bundled with `plugins-good` or `plugins-bad` despite what the package names imply. Both are required.
+>
+> `gstreamer1.0-plugins-bad` provides the `audiomixmatrix` element used for RX channel routing. Verify it is present: `gst-inspect-1.0 audiomixmatrix | head -3`
 
 ---
 
