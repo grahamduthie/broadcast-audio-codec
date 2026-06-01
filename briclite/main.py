@@ -26,7 +26,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="PSA300 Broadcast Codec Core", lifespan=lifespan)
+app = FastAPI(title="Broadcast Audio Codec Core", lifespan=lifespan)
 
 
 class ConnectRequest(BaseModel):

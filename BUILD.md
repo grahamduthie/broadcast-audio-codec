@@ -329,7 +329,7 @@ The codec uses a **raw UDP RTP stream** on port 5004 for audio transport. There 
 | RTP framing | 12-byte RTP header + 4-byte RFC2250 header (MBZ=0, offset=0) + ADTS frame |
 | RTP timestamp increment | 3840 ticks per frame (1024 samples × 90000/24000) |
 
-**Codec auto-detection:** Remote devices that support auto-detection (like the Comrex BRIC-Link) will identify the incoming codec from the payload bytes (ADTS sync word `0xFFF`). They do NOT auto-detect OPUS — OPUS requires SIP negotiation (see Section 12).
+**Codec auto-detection:** Remote devices that support codec auto-detection will identify the incoming codec from the payload bytes (ADTS sync word `0xFFF`). They do NOT auto-detect OPUS — OPUS requires SIP negotiation (see Section 12).
 
 **Shared socket:** Both TX (outgoing) and RX (incoming) use the same UDP socket bound to port 5004. This ensures the remote device always replies to port 5004 rather than the OS-assigned ephemeral source port the TX socket would otherwise use.
 
