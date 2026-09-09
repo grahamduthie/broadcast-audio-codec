@@ -133,6 +133,20 @@ class GoXLRInterface(AudioInterface):
             return False
 
     @staticmethod
+    def behringer_available() -> bool:
+        """Return True if the Behringer (second mic) ALSA device is currently present.
+
+        The Behringer is an optional second source mixed into the GoXLR RX
+        pipeline (extra_rx_source_bins). Unlike the GoXLR itself, its absence
+        must not take the whole RX pipeline down.
+        """
+        try:
+            with open("/proc/asound/cards") as f:
+                return "CODEC" in f.read()
+        except OSError:
+            return False
+
+    @staticmethod
     def _recv_exact(sock: socket.socket, n: int) -> bytes:
         buf = b""
         while len(buf) < n:
@@ -220,6 +234,8 @@ class GoXLRInterface(AudioInterface):
                 f'audiomixmatrix in-channels=2 out-channels=10 matrix="{_BEHRINGER_MATRIX}" ! '
                 f'goxlr_mix.'
             ]
+        if not GoXLRInterface.behringer_available():
+            return []
         return [
             f'alsasrc device={_BEHRINGER_DEVICE} ! audioconvert ! '
             f'audioresample ! audio/x-raw,rate=48000,channels=2 ! '

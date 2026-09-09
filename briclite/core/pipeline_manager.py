@@ -177,6 +177,7 @@ class PipelineController:
 
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4194304)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.settimeout(0.5)
         self.sock.bind(("0.0.0.0", self.rx_port))
 
@@ -207,6 +208,8 @@ class PipelineController:
             self._rx_rebuild_timer = None
         self.tx_pipeline.set_state(Gst.State.NULL)
         self.rx_pipeline.set_state(Gst.State.NULL)
+        self.tx_pipeline.get_state(Gst.SECOND)   # block until audio devices are released
+        self.rx_pipeline.get_state(Gst.SECOND)
         self.glib_loop.quit()
         self.interface.stop()
         self.jitter_buf.reset()

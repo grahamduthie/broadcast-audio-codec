@@ -90,16 +90,30 @@ async def _interface_monitor():
     """Poll every 5 s and hot-swap the audio interface if GoXLR presence changes.
 
     Hot-swap only runs in auto mode; an explicit audio_interface setting is fixed.
+    Independently of that, while in GoXLR mode this also watches for the
+    Behringer (second mic) being plugged/unplugged and rebuilds just the RX
+    pipeline to pick it up — that device is optional and must not require a
+    full interface switch to recover.
     """
     global controller, interface
     log = logging.getLogger("main")
     _auto_mode = config.get("system", {}).get("audio_interface", "auto") == "auto"
     pfl_task: Optional[asyncio.Task] = None
+    behringer_present = GoXLRInterface.behringer_available() if isinstance(interface, GoXLRInterface) else False
     try:
         if isinstance(interface, GoXLRInterface):
             pfl_task = asyncio.create_task(interface.monitor_pfl())
         while True:
             await asyncio.sleep(5)
+
+            if isinstance(interface, GoXLRInterface):
+                now_present = GoXLRInterface.behringer_available()
+                if now_present != behringer_present:
+                    behringer_present = now_present
+                    log.info(f"Behringer second mic {'connected' if now_present else 'disconnected'}")
+                    if controller.is_active:
+                        controller.set_rx_channel_mode(controller.rx_channel_mode)
+
             if not _auto_mode:
                 continue
             goxlr_now = GoXLRInterface.is_available()
@@ -118,6 +132,7 @@ async def _interface_monitor():
             await global_state.update_metrics({"audio_interface": mode})
             await _sync_goxlr_state(interface)
             log.info(f"Audio interface switched to {mode}")
+            behringer_present = GoXLRInterface.behringer_available() if goxlr_now else False
             if isinstance(interface, GoXLRInterface):
                 pfl_task = asyncio.create_task(interface.monitor_pfl())
     finally:
