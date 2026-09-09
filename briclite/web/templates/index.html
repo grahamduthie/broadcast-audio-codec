@@ -95,6 +95,12 @@
                     <span class="vol-val" id="hp-vol-label">100%</span>
                 </div>
             </div>
+            <hr style="border-color:#333; margin: 12px 0 10px;">
+            <label>Speaker Volume</label>
+            <div class="vol-row">
+                <input type="range" id="rx-vol-slider" min="0" max="100" value="100" oninput="onRxVolInput(this.value)" style="accent-color:#90caf9;">
+                <span class="vol-val" id="rx-vol-label" style="color:#90caf9;">100%</span>
+            </div>
             <hr style="border-color:#333;">
             <h4>Link Status: <span id="lbl-status" style="color:#d32f2f;">DISCONNECTED</span></h4>
             <div>Jitter: <span id="lbl-jitter" class="stat-val">0</span> ms</div>
@@ -384,6 +390,21 @@
             document.getElementById('mode-' + mode).classList.add('active');
         }
 
+        let rxVolTimer = null;
+        let rxSliderDragging = false;
+        function onRxVolInput(val) {
+            rxSliderDragging = true;
+            document.getElementById('rx-vol-label').textContent = val + '%';
+            clearTimeout(rxVolTimer);
+            rxVolTimer = setTimeout(() => {
+                fetch('/api/rx_volume', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ pct: parseInt(val) })
+                }).then(() => { rxSliderDragging = false; });
+            }, 80);
+        }
+
         let hpVolTimer = null;
         let hpSliderDragging = false;
         function onHpVolInput(val) {
@@ -467,6 +488,12 @@
                 badge.textContent = d.audio_interface.toUpperCase();
                 badge.className = 'iface-badge ' + (isGoxlr ? 'iface-goxlr' : 'iface-behringer');
                 document.getElementById('goxlr-controls').style.display = isGoxlr ? '' : 'none';
+            }
+
+            // Speaker volume slider
+            if (d.rx_volume != null && !rxSliderDragging) {
+                document.getElementById('rx-vol-slider').value = d.rx_volume;
+                document.getElementById('rx-vol-label').textContent = d.rx_volume + '%';
             }
 
             // Headphone volume slider (only sync when user is not dragging)

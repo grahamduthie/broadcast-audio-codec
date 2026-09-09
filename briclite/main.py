@@ -1,6 +1,8 @@
 import json
 import logging
 import asyncio
+import os
+import time
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -16,7 +18,9 @@ from interfaces.goxlr import GoXLRInterface
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
-with open("/opt/briclite/config.json") as f:
+_BRICLITE_HOME = os.environ.get("BRICLITE_HOME", "/opt/briclite")
+
+with open(os.path.join(_BRICLITE_HOME, "config.json")) as f:
     config = json.load(f)
 
 controller: Optional[PipelineController] = None
@@ -53,16 +57,51 @@ async def _cancel_task(task: Optional[asyncio.Task]) -> None:
             pass
 
 
+_RX_WATCHDOG_S = 10.0
+
+
+async def _rx_watchdog():
+    """Reconnect automatically when no RX packets arrive for _RX_WATCHDOG_S seconds.
+
+    The Comrex drops its session on a TX gap. Briclite has no way to know this
+    has happened other than noticing that the Comrex has stopped sending back.
+    A new PipelineController produces a new random SSRC, which makes the Comrex
+    treat the resumed stream as a fresh incoming call and re-establish.
+    """
+    global controller
+    log = logging.getLogger("watchdog")
+    while True:
+        await asyncio.sleep(3.0)
+        if not controller.is_active:
+            continue
+        elapsed = time.monotonic() - controller.last_rx_packet
+        if elapsed > _RX_WATCHDOG_S:
+            log.warning(f"No RX packets for {elapsed:.1f}s — auto-reconnecting")
+            loop = asyncio.get_event_loop()
+            controller.stop(loop)
+            await asyncio.sleep(1.0)
+            controller = PipelineController(config, interface)
+            controller.start(loop)
+            await _sync_goxlr_state(interface)
+            log.info("Auto-reconnect complete")
+
+
 async def _interface_monitor():
-    """Poll every 5 s and hot-swap the audio interface if GoXLR presence changes."""
+    """Poll every 5 s and hot-swap the audio interface if GoXLR presence changes.
+
+    Hot-swap only runs in auto mode; an explicit audio_interface setting is fixed.
+    """
     global controller, interface
     log = logging.getLogger("main")
+    _auto_mode = config.get("system", {}).get("audio_interface", "auto") == "auto"
     pfl_task: Optional[asyncio.Task] = None
     try:
         if isinstance(interface, GoXLRInterface):
             pfl_task = asyncio.create_task(interface.monitor_pfl())
         while True:
             await asyncio.sleep(5)
+            if not _auto_mode:
+                continue
             goxlr_now = GoXLRInterface.is_available()
             goxlr_was = isinstance(interface, GoXLRInterface)
             if goxlr_now == goxlr_was:
@@ -93,13 +132,16 @@ async def lifespan(app: FastAPI):
     mode = "GoXLR" if isinstance(interface, GoXLRInterface) else "Behringer"
     await global_state.update_metrics({"audio_interface": mode})
     await _sync_goxlr_state(interface)
-    monitor = asyncio.create_task(_interface_monitor())
+    await global_state.update_metrics({"rx_volume": 100})
+    monitor  = asyncio.create_task(_interface_monitor())
+    watchdog = asyncio.create_task(_rx_watchdog())
     yield
-    monitor.cancel()
-    try:
-        await monitor
-    except asyncio.CancelledError:
-        pass
+    for task in (monitor, watchdog):
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(title="Broadcast Audio Codec Core", lifespan=lifespan)
@@ -113,6 +155,9 @@ class RxModeRequest(BaseModel):
     mode: str
 
 class HeadphoneVolumeRequest(BaseModel):
+    pct: int  # 0–100
+
+class RxVolumeRequest(BaseModel):
     pct: int  # 0–100
 
 
@@ -152,6 +197,15 @@ async def set_headphone_volume(body: HeadphoneVolumeRequest):
     return {"status": "success"}
 
 
+@app.post("/api/rx_volume")
+async def set_rx_volume(body: RxVolumeRequest):
+    if not 0 <= body.pct <= 100:
+        return {"status": "error", "message": "pct must be 0–100"}
+    controller.set_rx_volume(body.pct)
+    await global_state.update_metrics({"rx_volume": body.pct})
+    return {"status": "success"}
+
+
 @app.post("/api/disconnect")
 async def disconnect_codec():
     loop = asyncio.get_event_loop()
@@ -175,7 +229,7 @@ async def telemetry_socket(websocket: WebSocket):
 
 @app.get("/")
 async def get_dashboard():
-    with open("/opt/briclite/web/templates/index.html") as f:
+    with open(os.path.join(_BRICLITE_HOME, "web/templates/index.html")) as f:
         return HTMLResponse(content=f.read(), status_code=200)
 
 

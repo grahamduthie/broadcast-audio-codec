@@ -126,6 +126,7 @@ class PipelineController:
         self.rx_appsrc   = None
         self.sock        = None
         self.glib_loop   = GLib.MainLoop()
+        self.last_rx_packet = 0.0
 
         self._build_pipelines()
 
@@ -180,6 +181,7 @@ class PipelineController:
         self.sock.bind(("0.0.0.0", self.rx_port))
 
         self.interface.start()
+        self.last_rx_packet = time.monotonic()
         self.tx_pipeline.set_state(Gst.State.PLAYING)
         self.rx_pipeline.set_state(Gst.State.PLAYING)
         self.is_active = True
@@ -223,6 +225,11 @@ class PipelineController:
             event_loop
         )
 
+    def set_rx_volume(self, pct: int) -> None:
+        vol = self.rx_pipeline.get_by_name("rx_vol")
+        if vol:
+            vol.set_property("volume", max(0.0, min(1.0, pct / 100.0)))
+
     def set_rx_channel_mode(self, mode: str):
         self.rx_channel_mode = mode
         if not self.is_active:
@@ -238,7 +245,7 @@ class PipelineController:
         mode = self.rx_channel_mode
         old = self.rx_pipeline
         old.set_state(Gst.State.NULL)
-        old.get_state(Gst.SECOND)          # block until ALSA is released
+        old.get_state(Gst.SECOND)          # block until audio device is released
         self.rx_pipeline, self.rx_appsrc = self._build_rx_pipeline(mode)
         self.rx_pipeline.set_state(Gst.State.PLAYING)
 
@@ -296,6 +303,7 @@ class PipelineController:
                 continue
 
             self.jitter_buf.push(seq, rtp_ts, bytes(payload))
+            self.last_rx_packet = time.monotonic()
 
     def _playout_loop(self):
         FRAME_DUR = Gst.SECOND * _AAC_FRAME // _AAC_SAMP

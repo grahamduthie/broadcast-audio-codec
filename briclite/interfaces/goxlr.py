@@ -1,5 +1,6 @@
 import asyncio
 import os
+import sys
 import socket
 import struct
 import json
@@ -8,6 +9,8 @@ import logging
 import websockets
 
 from .base import AudioInterface
+
+_IS_MACOS = sys.platform == "darwin"
 
 logger = logging.getLogger("goxlr")
 
@@ -93,6 +96,13 @@ _BEHRINGER_MATRIX = (
 )
 
 
+def _broadcast_extract_matrix(n_in: int) -> str:
+    """Matrix that extracts channels 0 and 1 (BroadcastMix) from an n_in-channel stream."""
+    row0 = ["1.0" if i == 0 else "0.0" for i in range(n_in)]
+    row1 = ["1.0" if i == 1 else "0.0" for i in range(n_in)]
+    return f"<<{','.join(row0)}>,<{','.join(row1)}>>"
+
+
 class GoXLRInterface(AudioInterface):
 
     def __init__(self, config: dict):
@@ -100,6 +110,12 @@ class GoXLRInterface(AudioInterface):
         self._studio_pfl: bool = False
         self._studio_saved_volume: int | None = None
         self._hp_routing: dict[str, bool] = {}
+        if _IS_MACOS:
+            goxlr_cfg = config.get("goxlr", {})
+            self._mac_tx_device: str = goxlr_cfg.get("mac_tx_device", "")
+            self._mac_rx_device: str = goxlr_cfg.get("mac_rx_device", "")
+            self._mac_behringer_device: str = goxlr_cfg.get("mac_behringer_device", "")
+            self._capture_channels: int = goxlr_cfg.get("capture_channels", 21)
 
     @staticmethod
     def is_available() -> bool:
@@ -142,17 +158,50 @@ class GoXLRInterface(AudioInterface):
         return result
 
     def _cmd(self, command: dict) -> None:
+        if self._serial is None:
+            return
         result = self._ipc({"Command": [self._serial, command]})
         if result != "Ok":
             logger.warning(f"GoXLR command {command} returned: {result}")
 
     def tx_source_bin(self) -> str:
+        if _IS_MACOS:
+            if not self._mac_tx_device:
+                # No device configured — use default system input
+                return "osxaudiosrc ! audioconvert ! audio/x-raw,rate=48000,channels=2"
+            n = self._capture_channels
+            if n <= 2:
+                # Stereo device (e.g. VB-Cable) — no channel extraction needed
+                return (
+                    f'osxaudiosrc unique-id="{self._mac_tx_device}" ! '
+                    f'audioconvert ! audio/x-raw,rate=48000,channels=2'
+                )
+            matrix = _broadcast_extract_matrix(n)
+            return (
+                f'osxaudiosrc unique-id="{self._mac_tx_device}" ! '
+                f'audio/x-raw,channels={n},layout=interleaved ! '
+                f'audiomixmatrix in-channels={n} out-channels=2 matrix="{matrix}" ! '
+                f'audioconvert ! audio/x-raw,rate=48000,channels=2'
+            )
         return (
             "alsasrc device=goxlr_broadcast ! audioconvert ! "
             "audio/x-raw,rate=48000,channels=2"
         )
 
     def rx_sink_bin(self) -> str:
+        if _IS_MACOS:
+            # Simple stereo output when no GoXLR (capture_channels <= 2)
+            if not self._mac_rx_device or self._capture_channels <= 2:
+                uid = f'unique-id="{self._mac_rx_device}" ' if self._mac_rx_device else ''
+                return f'audioresample ! audioconvert ! volume name=rx_vol volume=1.0 ! osxaudiosink {uid}sync=false'
+            # GoXLR: route through 10-channel playback matrix
+            return (
+                f'audioresample ! audio/x-raw,rate=48000,channels=2 ! '
+                f'audiomixmatrix in-channels=2 out-channels=10 matrix="{_RX_MATRIX}" ! '
+                f'audiomixer name=goxlr_mix ! '
+                f'audioconvert ! audio/x-raw,format=S32LE ! '
+                f'osxaudiosink unique-id="{self._mac_rx_device}" sync=false'
+            )
         return (
             f'audioresample ! audio/x-raw,rate=48000,channels=2 ! '
             f'audiomixmatrix in-channels=2 out-channels=10 matrix="{_RX_MATRIX}" ! '
@@ -162,6 +211,15 @@ class GoXLRInterface(AudioInterface):
         )
 
     def extra_rx_source_bins(self) -> list[str]:
+        if _IS_MACOS:
+            if not self._mac_behringer_device:
+                return []
+            return [
+                f'osxaudiosrc unique-id="{self._mac_behringer_device}" ! audioconvert ! '
+                f'audioresample ! audio/x-raw,rate=48000,channels=2 ! '
+                f'audiomixmatrix in-channels=2 out-channels=10 matrix="{_BEHRINGER_MATRIX}" ! '
+                f'goxlr_mix.'
+            ]
         return [
             f'alsasrc device={_BEHRINGER_DEVICE} ! audioconvert ! '
             f'audioresample ! audio/x-raw,rate=48000,channels=2 ! '
@@ -174,7 +232,12 @@ class GoXLRInterface(AudioInterface):
         self._studio_saved_volume = None
         self._hp_routing = {_FADER_TO_SOURCE[f]: True for f, _ in _FADERS}
         self._hp_routing["Music"] = False  # studio return starts off in headphones
-        self._write_alsa_config()
+        if not _IS_MACOS:
+            self._write_alsa_config()
+        if not GoXLRInterface.is_available():
+            logger.warning("GoXLR Mini not detected — running without hardware control")
+            self._serial = None
+            return
         status = self._ipc({"GetStatus": None})
         self._serial = next(iter(status["Status"]["mixers"]))
         logger.info(f"GoXLR Mini ready: serial={self._serial}")
@@ -242,11 +305,18 @@ class GoXLRInterface(AudioInterface):
         self._cmd({"SetButtonColours": ["Bleep", colour, "000000"]})
 
     def get_headphone_volume(self) -> int:
+        if not GoXLRInterface.is_available():
+            return 128
         status = self._ipc({"GetStatus": None})
-        mixer = next(iter(status["Status"]["mixers"].values()))
+        mixers = status.get("Status", {}).get("mixers", {})
+        if not mixers:
+            return 128
+        mixer = next(iter(mixers.values()))
         return mixer["levels"]["volumes"]["Headphones"]
 
     def set_headphone_volume(self, level: int) -> None:
+        if self._serial is None:
+            return
         self._cmd({"SetVolume": ["Headphones", max(0, min(255, level))]})
 
     async def monitor_pfl(self) -> None:
