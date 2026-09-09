@@ -270,8 +270,15 @@ class GoXLRInterface(AudioInterface):
         ]
 
     def start(self) -> None:
-        self._studio_pfl = False
-        self._studio_saved_volume = None
+        # Reset the "last pushed to hardware" routing cache so it gets fully
+        # reapplied below — but NOT self._studio_pfl / self._studio_saved_volume.
+        # Those must survive a reconnect: a mode switch, Behringer hotplug, or
+        # the RX watchdog's auto-reconnect tears down and rebuilds the
+        # GStreamer pipeline on this *same* GoXLRInterface instance, not the
+        # physical GoXLR device, so an operator's studio-return PFL must not
+        # be silently dropped underneath them. A genuinely fresh instance
+        # (see __init__, used on process boot and GoXLR hotplug) still starts
+        # with PFL off, which is correct there.
         self._hp_routing = {_FADER_TO_SOURCE[f]: True for f, _ in _FADERS}
         self._hp_routing["Music"] = False  # studio return starts off in headphones
         if not _IS_MACOS:
@@ -287,6 +294,20 @@ class GoXLRInterface(AudioInterface):
         self._apply_routing()
         self._apply_mute_functions()
         self._apply_colours()
+        if self._studio_pfl:
+            # Reassert PFL routing/volume/colour over the non-PFL defaults
+            # _apply_routing()/_apply_colours() just set above.
+            self._apply_headphone_routing()
+            if self._studio_saved_volume is None:
+                self._apply_studio_pfl_volume()
+            else:
+                # Already mid-PFL from before this reconnect — the hardware
+                # itself was never touched, so just re-force the volume
+                # rather than re-deriving _studio_saved_volume from current
+                # status (which would read back 255 and clobber the real
+                # pre-PFL value we're holding onto).
+                self._cmd({"SetVolume": ["Music", 255]})
+            self._set_bleep_colour()
 
     def stop(self) -> None:
         pass
