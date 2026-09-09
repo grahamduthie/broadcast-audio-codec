@@ -22,6 +22,13 @@ _PFL_COLOUR      = "FF8800"  # orange — studio return PFL active
 _NORMAL_COLOUR   = "00FFFF"  # cyan   — normal
 _BEHRINGER_DEVICE = "hw:CODEC,0"
 
+# audiomixer's automatic latency query fails on this pipeline ("Latency query
+# failed" — the mix of a manually-fed appsrc branch and a live alsasrc branch
+# never negotiates a value), leaving it to assume 0 additional latency. Giving
+# it an explicit budget matching the jitter buffer's 200ms lets both branches'
+# buffers actually line up instead of the aggregator starving/stalling.
+_GOXLR_MIX_PROPS = "ignore-inactive-pads=true min-upstream-latency=200000000 latency=200000000"
+
 # Maps fader letters to GoXLR routing source names
 _FADER_TO_SOURCE = {
     "A": "Microphone",
@@ -208,18 +215,31 @@ class GoXLRInterface(AudioInterface):
             if not self._mac_rx_device or self._capture_channels <= 2:
                 uid = f'unique-id="{self._mac_rx_device}" ' if self._mac_rx_device else ''
                 return f'audioresample ! audioconvert ! volume name=rx_vol volume=1.0 ! osxaudiosink {uid}sync=false'
-            # GoXLR: route through 10-channel playback matrix
+            # GoXLR: route through 10-channel playback matrix.
+            # Only insert audiomixer when there's a second source to combine —
+            # the aggregator base class has proven unreliable here even with a
+            # single pad connected, so it must not sit in the common no-extra
+            # -source path (see the ALSA/no-macOS branch below for details).
+            mix = f'audiomixer name=goxlr_mix {_GOXLR_MIX_PROPS} ! ' if self._mac_behringer_device else ''
             return (
                 f'audioresample ! audio/x-raw,rate=48000,channels=2 ! '
                 f'audiomixmatrix in-channels=2 out-channels=10 matrix="{_RX_MATRIX}" ! '
-                f'audiomixer name=goxlr_mix ! '
+                f'{mix}'
                 f'audioconvert ! audio/x-raw,format=S32LE ! '
                 f'osxaudiosink unique-id="{self._mac_rx_device}" sync=false'
             )
+        # Only insert audiomixer when the Behringer is actually present and will
+        # be combined in via extra_rx_source_bins(). The audiomixer/aggregator
+        # element has proven unreliable in this pipeline even with a single pad
+        # connected (intermittently stops producing output while everything
+        # upstream — decode, meter — keeps working, with no error posted to the
+        # bus), so it must be kept out of the common single-source path
+        # entirely rather than relied on to gracefully pass through one pad.
+        mix = f'audiomixer name=goxlr_mix {_GOXLR_MIX_PROPS} ! ' if GoXLRInterface.behringer_available() else ''
         return (
             f'audioresample ! audio/x-raw,rate=48000,channels=2 ! '
             f'audiomixmatrix in-channels=2 out-channels=10 matrix="{_RX_MATRIX}" ! '
-            f'audiomixer name=goxlr_mix ! '
+            f'{mix}'
             f'audioconvert ! audio/x-raw,format=S32LE ! '
             f'alsasink device=hw:GoXLRMini,0 sync=false'
         )
