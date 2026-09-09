@@ -324,7 +324,31 @@ Check the web dashboard's jitter metric and packet loss counter. If:
 3. If it recurs with the fix in place, the latency values (currently 200ms, matching the jitter buffer) may need tuning, or GStreamer's `audiomixer`/`aggregator` implementation may have changed behaviour in a newer version — check `gst-inspect-1.0 audiomixer`'s Element Properties for what's available.
 
 ### If you still hear occasional brief (~1 second or less) dropouts after the above
-This is a **different** issue, produces zero signal in `lost`/`late`/`jitter` or any log warning — confirmed via a 2.5-minute live watch on 2026-09-09 with dropouts audible throughout and all three counters staying at 0. It was initially attributed to clock drift with a fix planned around RTP-timestamp-derived PTS, but that diagnosis didn't hold up (see `ARCHITECTURE.md` §10/§12.4 for why) — every RX sink runs `sync=false` on a direct `hw:` ALSA device, so the more likely cause is a transient scheduling stall (GIL/CPU contention on the weak embedded hardware) starving that sink, not clock drift. **Mitigation applied 2026-09-09** (`ARCHITECTURE.md` §12.4): larger RX queue/ALSA buffers and best-effort `SCHED_FIFO` priority for the playout thread. Not yet confirmed on-air — needs a multi-hour soak listen. If it still recurs afterwards, see §12.4's follow-up note on adaptive playout correction for genuine oscillator drift.
+This is a **different** issue, produces zero signal in `lost`/`late`/`jitter` or any log warning — confirmed via a 2.5-minute live watch on 2026-09-09 with dropouts audible throughout and all three counters staying at 0. It was initially attributed to clock drift with a fix planned around RTP-timestamp-derived PTS, but that diagnosis didn't hold up (see `ARCHITECTURE.md` §10/§12.4 for why) — every RX sink runs `sync=false` on a direct `hw:` ALSA device, so the more likely cause is a transient scheduling stall (GIL/CPU contention on the weak embedded hardware) starving that sink, not clock drift. **Mitigation applied and deployed 2026-09-09** (`ARCHITECTURE.md` §12.4): larger RX queue/ALSA buffers, and `SCHED_FIFO` priority for the playout thread — the `CAP_SYS_NICE` grant is live on the PSA300 unit and confirmed active (`journalctl` shows `Playout thread: SCHED_FIFO priority 10`, not the earlier permission-denied warning). **Still not confirmed whether the glitch itself is actually gone** — needs a multi-hour soak listen; if it recurs, see §12.4's follow-up note on adaptive playout correction for genuine oscillator drift.
+
+## Issue: deploying a code change causes an extended outage and/or resets GoXLR PFL
+
+### What happens if you just `systemctl restart briclite.service` and move on
+Confirmed live 2026-09-09. The restart kills the whole process — `main.py`'s `lifespan()` shutdown never calls `PipelineController.stop()`, so no `DISCONNECTED` telemetry is ever pushed, and the dashboard's telemetry websocket has no "disconnected" visual state (`ws.onclose` in `index.html` just retries silently), so the web UI can look unchanged even though the codec is fully down. The codec also does **not** auto-reconnect on boot — `/api/connect` is a separate, deliberate call. If you leave more than ~10s between the restart finishing and calling `/api/connect`, two things compound:
+1. The remote (Comrex-like device) drops its own session on the TX gap it sees (see `_rx_watchdog()`'s docstring in `main.py`), so your manual reconnect doesn't immediately restore full audio.
+2. Our own RX watchdog then notices no RX packets for >10s and does its *own* full auto-reconnect a bit later — a second, fully automatic outage on top of the first.
+
+One real deploy this way produced ~76s of cumulative disruption from a single restart, including two silent GoXLR PFL resets (`Studio return PFL active` logged twice in the journal, ~50s apart — see `ARCHITECTURE.md` §9 "Bleep/PFL reset on reconnect").
+
+### How to deploy without triggering the cascade
+Restart and reconnect in one shell round-trip, with no human-turn delay in between — poll until the server is actually up, then reconnect immediately:
+```bash
+sudo systemctl restart briclite.service
+for i in $(seq 1 50); do
+  curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1/ | grep -q 200 && break
+  sleep 0.1
+done
+curl -s -X POST http://127.0.0.1/api/connect -H "Content-Type: application/json" -d "{}"
+```
+Done this way, total outage is ~4-5 seconds and the watchdog never fires.
+
+### GoXLR PFL comes back off after a deploy no matter what
+Expected, not (yet) fixed — see `ARCHITECTURE.md` §12 roadmap item 5. The 2026-09-09 fix only preserves PFL across in-process reconnects (mode switch, hotplug, watchdog auto-reconnect, manual disconnect/reconnect); a full `systemctl restart` wipes the whole process's memory including `GoXLRInterface._studio_pfl`, and there's nowhere outside the process that remembers PFL was engaged. Just re-press Bleep after a deploy.
 
 ## Issue: Behringer (or other USB peripherals) repeatedly disconnect, reset, or throw ALSA "No such device" errors
 
