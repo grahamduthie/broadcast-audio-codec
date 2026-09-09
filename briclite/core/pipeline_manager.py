@@ -103,7 +103,7 @@ class JitterBuffer:
 
 class PipelineController:
 
-    def __init__(self, config: dict, interface: AudioInterface):
+    def __init__(self, config: dict, interface: AudioInterface, rx_channel_mode: str = "stereo"):
         Gst.init(None)
         net = config["audio_network"]
         self.interface  = interface
@@ -118,8 +118,9 @@ class PipelineController:
         self.rtp_ts     = random.randint(0, 0xFFFFFFFF)
         self.rtp_ssrc   = random.randint(0, 0xFFFFFFFF)
 
-        self.rx_channel_mode  = "stereo"
+        self.rx_channel_mode  = rx_channel_mode
         self._rx_rebuild_timer = None
+        self._rx_rebuild_lock  = threading.Lock()
         self.jitter_buf  = JitterBuffer(latency_ms=self.latency_ms)
         self.tx_pipeline = None
         self.rx_pipeline = None
@@ -245,12 +246,21 @@ class PipelineController:
     def _do_rx_rebuild(self):
         if not self.is_active:
             return
-        mode = self.rx_channel_mode
-        old = self.rx_pipeline
-        old.set_state(Gst.State.NULL)
-        old.get_state(Gst.SECOND)          # block until audio device is released
-        self.rx_pipeline, self.rx_appsrc = self._build_rx_pipeline(mode)
-        self.rx_pipeline.set_state(Gst.State.PLAYING)
+        # Serialised against _playout_loop's push-buffer calls and against
+        # overlapping rebuild triggers (e.g. a channel-mode switch and a
+        # Behringer hotplug event landing close together) — without this,
+        # tearing down self.rx_pipeline/self.rx_appsrc while another thread
+        # is mid-emit() or mid-rebuild on the same objects wedges GStreamer
+        # and freezes the RX meter with no error ever posted to the bus.
+        with self._rx_rebuild_lock:
+            if not self.is_active:
+                return
+            mode = self.rx_channel_mode
+            old = self.rx_pipeline
+            old.set_state(Gst.State.NULL)
+            old.get_state(Gst.SECOND)          # block until audio device is released
+            self.rx_pipeline, self.rx_appsrc = self._build_rx_pipeline(mode)
+            self.rx_pipeline.set_state(Gst.State.PLAYING)
 
     def _on_tx_sample(self, appsink):
         sample = appsink.emit("pull-sample")
@@ -332,7 +342,8 @@ class PipelineController:
             buf.duration = FRAME_DUR
             rx_pts      += FRAME_DUR
 
-            ret = self.rx_appsrc.emit("push-buffer", buf)
+            with self._rx_rebuild_lock:
+                ret = self.rx_appsrc.emit("push-buffer", buf)
             if ret != Gst.FlowReturn.OK:
                 logger.warning(f"appsrc push: {ret}")
 

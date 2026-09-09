@@ -451,7 +451,10 @@
         });
 
         // ─── WebSocket telemetry ──────────────────────────────────────────────
+        function connectTelemetry() {
         const ws = new WebSocket(`ws://${window.location.host}/ws/telemetry`);
+        ws.onclose = () => setTimeout(connectTelemetry, 1000);
+        ws.onerror = () => ws.close();
         ws.onmessage = (event) => {
             const d = JSON.parse(event.data);
 
@@ -509,6 +512,8 @@
                 jitterChart.update('none');
             }
         };
+        }
+        connectTelemetry();
     </script>
 </body>
 </html>

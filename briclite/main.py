@@ -58,6 +58,30 @@ async def _cancel_task(task: Optional[asyncio.Task]) -> None:
 
 
 _RX_WATCHDOG_S = 10.0
+_full_reconnect_lock = asyncio.Lock()
+
+
+async def _full_reconnect(rx_channel_mode: Optional[str] = None) -> None:
+    """Stop and fully rebuild the pipeline (both TX and RX together) rather than
+    rebuilding RX in place.
+
+    With the GoXLR interface, TX (capture) and RX (playback) are two directions
+    of the same physical USB audio device. Tearing down and reopening only the
+    RX side while TX stays open reliably wedges the GoXLR's ALSA device —
+    PipelineController._do_rx_rebuild's in-place RX-only rebuild is only safe
+    for the plain Behringer interface, which has no shared device. This is used
+    for RX channel-mode changes and Behringer hotplug while running GoXLR.
+    """
+    global controller
+    async with _full_reconnect_lock:
+        if not controller.is_active:
+            return
+        loop = asyncio.get_event_loop()
+        mode = rx_channel_mode if rx_channel_mode is not None else controller.rx_channel_mode
+        controller.stop(loop)
+        await asyncio.sleep(0.3)
+        controller = PipelineController(config, interface, rx_channel_mode=mode)
+        controller.start(loop)
 
 
 async def _rx_watchdog():
@@ -78,9 +102,10 @@ async def _rx_watchdog():
         if elapsed > _RX_WATCHDOG_S:
             log.warning(f"No RX packets for {elapsed:.1f}s — auto-reconnecting")
             loop = asyncio.get_event_loop()
+            mode = controller.rx_channel_mode
             controller.stop(loop)
             await asyncio.sleep(1.0)
-            controller = PipelineController(config, interface)
+            controller = PipelineController(config, interface, rx_channel_mode=mode)
             controller.start(loop)
             await _sync_goxlr_state(interface)
             log.info("Auto-reconnect complete")
@@ -111,8 +136,7 @@ async def _interface_monitor():
                 if now_present != behringer_present:
                     behringer_present = now_present
                     log.info(f"Behringer second mic {'connected' if now_present else 'disconnected'}")
-                    if controller.is_active:
-                        controller.set_rx_channel_mode(controller.rx_channel_mode)
+                    await _full_reconnect()
 
             if not _auto_mode:
                 continue
@@ -185,11 +209,9 @@ async def connect_codec(body: ConnectRequest = ConnectRequest()):
     if body.target_ip:
         config["audio_network"]["target_ip"] = body.target_ip
     snapshot = await global_state.get_snapshot()
-    controller = PipelineController(config, interface)
-    controller.start(loop)
     saved_mode = snapshot.get("rx_channel_mode", "stereo")
-    if saved_mode != "stereo":
-        controller.set_rx_channel_mode(saved_mode)
+    controller = PipelineController(config, interface, rx_channel_mode=saved_mode)
+    controller.start(loop)
     return {"status": "success", "message": "Pipeline active"}
 
 
@@ -198,7 +220,10 @@ async def set_rx_mode(body: RxModeRequest):
     if body.mode not in {"stereo", "left", "right"}:
         return {"status": "error", "message": "mode must be stereo, left, or right"}
     await global_state.update_metrics({"rx_channel_mode": body.mode})
-    controller.set_rx_channel_mode(body.mode)
+    if isinstance(interface, GoXLRInterface):
+        await _full_reconnect(body.mode)
+    else:
+        controller.set_rx_channel_mode(body.mode)
     return {"status": "success", "message": f"RX routing: {body.mode}"}
 
 
