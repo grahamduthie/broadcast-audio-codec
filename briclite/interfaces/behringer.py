@@ -1,4 +1,4 @@
-from .base import AudioInterface
+from .base import ALSA_BUFFER_TIME_US, ALSA_LATENCY_TIME_US, AudioInterface
 
 
 class BehringerInterface(AudioInterface):
@@ -13,4 +13,7 @@ class BehringerInterface(AudioInterface):
         )
 
     def rx_sink_bin(self) -> str:
-        return f"alsasink device={self._device} sync=false"
+        return (
+            f"alsasink device={self._device} sync=false "
+            f"buffer-time={ALSA_BUFFER_TIME_US} latency-time={ALSA_LATENCY_TIME_US}"
+        )

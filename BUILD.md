@@ -263,6 +263,9 @@ Restart=on-failure
 RestartSec=5
 User=codec
 Environment=GST_DEBUG=2
+AmbientCapabilities=CAP_SYS_NICE
+CapabilityBoundingSet=CAP_SYS_NICE
+LimitRTPRIO=20
 
 [Install]
 WantedBy=multi-user.target
@@ -274,6 +277,8 @@ sudo systemctl enable --now briclite.service
 ```
 
 `GST_DEBUG=2` keeps GStreamer error and warning messages visible in `journalctl`. Remove it once the unit is stable in production.
+
+`CAP_SYS_NICE`/`LimitRTPRIO=20` let the RX playout thread (`_playout_loop()` in `pipeline_manager.py`) raise itself to `SCHED_FIFO` priority, so a brief GIL/CPU scheduling stall can't starve the direct `hw:` ALSA sink and cause an audible glitch — see ARCHITECTURE.md §10/§12.4. Without this grant the process falls back to normal scheduling and just logs a warning; it is not required for the service to run, only to get the full benefit of this hardening. **Applying it to an already-running unit requires `daemon-reload` + a service restart, which briefly drops the live RTP session — schedule that deliberately rather than during a broadcast.**
 
 ---
 

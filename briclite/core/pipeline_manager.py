@@ -2,8 +2,10 @@ import gi
 import threading
 import asyncio
 import logging
+import os
 import socket
 import struct
+import sys
 import random
 import time
 
@@ -25,6 +27,14 @@ _AAC_SAMP  = 24000
 _AAC_FRAME = 1024
 _FRAME_S   = _AAC_FRAME / _AAC_SAMP
 _TS_INC    = _AAC_FRAME * _RTP_CLOCK // _AAC_SAMP   # 3840
+
+# Headroom against transient scheduling stalls (GIL contention from the meter/
+# telemetry threads, CPU load spikes) on the weak embedded hardware this runs
+# on. This is a ceiling only — the queue sits near-empty in steady state, so
+# raising max-size costs no steady-state latency, just stall headroom.
+# See ARCHITECTURE.md §10/§12.4.
+_RX_QUEUE_BUFFERS   = 50        # ~2.1s of compressed AAC frames, was 10 (~430ms)
+_PLAYOUT_RT_PRIORITY = 10       # SCHED_FIFO priority for the playout thread (Linux only)
 
 
 def _seq_after(a: int, b: int) -> bool:
@@ -135,7 +145,7 @@ class PipelineController:
         matrix = _MATRIX_STRINGS.get(mode, _MATRIX_STRINGS["stereo"])
         rx_str = (
             f"appsrc name=rx_src is-live=true format=time block=false ! "
-            f"queue max-size-buffers=10 ! "
+            f"queue max-size-buffers={_RX_QUEUE_BUFFERS} max-size-bytes=0 max-size-time=0 ! "
             f"audio/mpeg,mpegversion=4,stream-format=adts ! "
             f"avdec_aac ! audioconvert ! "
             f'audiomixmatrix name=rx_router in-channels=2 out-channels=2 matrix="{matrix}" ! '
@@ -319,6 +329,18 @@ class PipelineController:
             self.last_rx_packet = time.monotonic()
 
     def _playout_loop(self):
+        # Best-effort: protect this thread from being descheduled by system
+        # load or GIL contention (meter/telemetry threads) for long enough to
+        # starve the direct `hw:` ALSA sink. Needs CAP_SYS_NICE/RTPRIO — see
+        # BUILD.md §7 for the systemd unit grant. Silently stays SCHED_OTHER
+        # if not permitted; the larger buffers above are the primary defence.
+        if sys.platform.startswith("linux"):
+            try:
+                os.sched_setscheduler(0, os.SCHED_FIFO, os.sched_param(_PLAYOUT_RT_PRIORITY))
+                logger.info(f"Playout thread: SCHED_FIFO priority {_PLAYOUT_RT_PRIORITY}")
+            except OSError as e:
+                logger.warning(f"Playout thread: could not raise scheduling priority ({e}) — see BUILD.md §7")
+
         FRAME_DUR = Gst.SECOND * _AAC_FRAME // _AAC_SAMP
         rx_pts    = 0
         last_good = None

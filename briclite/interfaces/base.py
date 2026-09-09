@@ -1,5 +1,13 @@
 from abc import ABC, abstractmethod
 
+# Shared hardware-sink buffering for every rx_sink_bin() implementation.
+# Doubled from GStreamer's audiobasesink defaults (200000/10000) to give the
+# RX playout thread headroom against transient scheduling stalls on the weak
+# embedded hardware this runs on, at the cost of ~200ms extra output latency —
+# see ARCHITECTURE.md §10/§12.4.
+ALSA_BUFFER_TIME_US  = 400000   # 400ms
+ALSA_LATENCY_TIME_US = 20000    # 20ms
+
 
 class AudioInterface(ABC):
 

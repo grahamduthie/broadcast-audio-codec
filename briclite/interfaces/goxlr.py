@@ -8,7 +8,7 @@ import logging
 
 import websockets
 
-from .base import AudioInterface
+from .base import ALSA_BUFFER_TIME_US, ALSA_LATENCY_TIME_US, AudioInterface
 
 _IS_MACOS = sys.platform == "darwin"
 
@@ -214,7 +214,11 @@ class GoXLRInterface(AudioInterface):
             # Simple stereo output when no GoXLR (capture_channels <= 2)
             if not self._mac_rx_device or self._capture_channels <= 2:
                 uid = f'unique-id="{self._mac_rx_device}" ' if self._mac_rx_device else ''
-                return f'audioresample ! audioconvert ! volume name=rx_vol volume=1.0 ! osxaudiosink {uid}sync=false'
+                return (
+                    f'audioresample ! audioconvert ! volume name=rx_vol volume=1.0 ! '
+                    f'osxaudiosink {uid}sync=false '
+                    f'buffer-time={ALSA_BUFFER_TIME_US} latency-time={ALSA_LATENCY_TIME_US}'
+                )
             # GoXLR: route through 10-channel playback matrix.
             # Only insert audiomixer when there's a second source to combine —
             # the aggregator base class has proven unreliable here even with a
@@ -226,7 +230,8 @@ class GoXLRInterface(AudioInterface):
                 f'audiomixmatrix in-channels=2 out-channels=10 matrix="{_RX_MATRIX}" ! '
                 f'{mix}'
                 f'audioconvert ! audio/x-raw,format=S32LE ! '
-                f'osxaudiosink unique-id="{self._mac_rx_device}" sync=false'
+                f'osxaudiosink unique-id="{self._mac_rx_device}" sync=false '
+                f'buffer-time={ALSA_BUFFER_TIME_US} latency-time={ALSA_LATENCY_TIME_US}'
             )
         # Only insert audiomixer when the Behringer is actually present and will
         # be combined in via extra_rx_source_bins(). The audiomixer/aggregator
@@ -241,7 +246,8 @@ class GoXLRInterface(AudioInterface):
             f'audiomixmatrix in-channels=2 out-channels=10 matrix="{_RX_MATRIX}" ! '
             f'{mix}'
             f'audioconvert ! audio/x-raw,format=S32LE ! '
-            f'alsasink device=hw:GoXLRMini,0 sync=false'
+            f'alsasink device=hw:GoXLRMini,0 sync=false '
+            f'buffer-time={ALSA_BUFFER_TIME_US} latency-time={ALSA_LATENCY_TIME_US}'
         )
 
     def extra_rx_source_bins(self) -> list[str]:
