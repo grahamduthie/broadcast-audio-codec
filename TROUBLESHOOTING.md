@@ -63,6 +63,8 @@ If only TX, no RX: Remote device may not be sending, or port is wrong.
 
 ## Issue: RX meters frozen, no audio from remote
 
+**Note (2026-09-09):** if the RX meter shows a *frozen non-zero* value (not decaying to -60 dBFS) and `jitter`/`lost`/`late` in telemetry are also frozen/unmoving, the whole playout loop has stalled — this is different from genuine silence and has several possible causes found this session: an ALSA/socket race on reconnect (fixed — see `stop()`'s `get_state(Gst.SECOND)` calls and `SO_REUSEADDR` in `pipeline_manager.py`), or (GoXLR only) the `audiomixer` issue described further down this file. Check those first if the symptom below (non-ADTS packets, meter pinned at exactly -60) doesn't match.
+
 ### Common cause: Jitter buffer received non-ADTS packets
 
 **Symptom:** RX meters show -60 dBFS (minimum) and don't respond to remote audio.
@@ -283,8 +285,10 @@ sudo systemctl restart briclite
 
 The code uses a 250ms debounce and blocks on `get_state()` after `set_state(NULL)` to prevent this race. If it recurs, increase the debounce delay in `set_rx_channel_mode` in `pipeline_manager.py`.
 
+**Updated 2026-09-09:** this in-place RX-only rebuild (`_do_rx_rebuild`) turned out to be fundamentally unsafe for the **GoXLR** interface specifically — the GoXLR's TX (capture) and RX (playback) share one physical USB device, and reopening only the RX side while TX stays open reliably wedges it (reproduced deterministically with a single mode switch, not just rapid clicking). GoXLR channel-mode changes now go through `main.py`'s `_full_reconnect()` (full stop + new `PipelineController` + start) instead — see `ARCHITECTURE.md` §5. The in-place rebuild described above is still used, and still fine, for the plain **Behringer** interface, which has no such shared-device constraint.
+
 ### Prevention
-Avoid clicking channel routing buttons in rapid succession. Wait for the brief audio interruption (≈0.5s) to complete before clicking again.
+Avoid clicking channel routing buttons in rapid succession. Wait for the brief audio interruption (≈0.5s for Behringer, up to ~1-2s for GoXLR's full reconnect) to complete before clicking again.
 
 ---
 
@@ -308,6 +312,34 @@ Check the web dashboard's jitter metric and packet loss counter. If:
 4. Restart service: `sudo systemctl restart briclite`
 
 ---
+
+## Issue: RX audio has an echo, sounds "stretched" like a warped cassette tape, or cuts to complete silence intermittently (GoXLR only)
+
+### Root cause (found and fixed 2026-09-09)
+`audiomixer` (used to combine codec RX audio with the optional Behringer second-mic branch before writing to the GoXLR) fails its automatic latency negotiation on this pipeline every time (`WARN aggregator: <goxlr_mix> Latency query failed`) and assumes 0 latency. This produced an audible echo, pitch-stretching, and — most confusingly — complete stalls of the mixer's entire output (both Game and Music bus go silent) that reproduced even with the Behringer physically unplugged. The RX `level` meter (upstream of the mixer) kept showing correct signal throughout, and `lost`/`late`/`jitter` in telemetry stayed at exactly 0 — this is not RTP packet loss, so don't chase the network for this specific symptom.
+
+**This is fixed** in `briclite/interfaces/goxlr.py`: the mixer is skipped entirely when there's no second source, and given an explicit latency budget (`ignore-inactive-pads=true min-upstream-latency=200000000 latency=200000000`) when the Behringer is present. If you see this again:
+1. Confirm you're running the fixed code: `grep GOXLR_MIX_PROPS /opt/briclite/interfaces/goxlr.py` should show the properties above.
+2. Check `journalctl -u briclite | grep "RX (stereo)"` for the actual deployed pipeline string — with the Behringer absent it should go straight from the RX matrix to `alsasink`, no `audiomixer` at all.
+3. If it recurs with the fix in place, the latency values (currently 200ms, matching the jitter buffer) may need tuning, or GStreamer's `audiomixer`/`aggregator` implementation may have changed behaviour in a newer version — check `gst-inspect-1.0 audiomixer`'s Element Properties for what's available.
+
+### If you still hear occasional brief (~1 second or less) dropouts after the above
+This is a **different**, still-open issue: clock drift between the remote encoder and the local playback clock. `audiorate` corrects for this "blind" (local wall clock only, no RTP timestamp reference) — see `ARCHITECTURE.md` §10/§12 for the planned fix (deriving RX playout PTS from RTP timestamps in `_playout_loop()`/`_rx_loop()`, `pipeline_manager.py`). Also produces zero signal in `lost`/`late`/`jitter` or any log warning — confirmed via a 2.5-minute live watch on 2026-09-09 with dropouts audible throughout and all three counters staying at 0.
+
+## Issue: Behringer (or other USB peripherals) repeatedly disconnect, reset, or throw ALSA "No such device" errors
+
+### Root cause
+Mixing USB speed classes (the GoXLR is high-speed/480Mbps, the Behringer is full-speed/12Mbps, keyboard/mouse dongles are typically low-speed/1.5Mbps) behind the **same** external hub can cause the slower devices to repeatedly reset, even though the GoXLR itself stays completely stable. Confirmed on the PSA300: the Behringer's ALSA capture threw `SNDRV_PCM_IOCTL_DELAY failed (-19): No such device` 886 times in a 10-minute window while sharing a hub with the GoXLR.
+
+### Diagnosis
+```bash
+journalctl -u briclite --since "-10 min" | grep -c "No such device"
+lsusb -t          # look for the GoXLR sharing a downstream hub with other devices
+sudo dmesg | grep -iE "usb.*reset"
+```
+
+### Fix
+Plug the GoXLR directly into a host USB port, bypassing any hub. Put the Behringer and any other peripherals on a separate hub/port. See `GOXLR-MINI-LINUX.md` §12 for the full writeup and the PSA300's specific two-port wiring. Verify with `lsusb -t` (GoXLR should be a direct child of the root hub) and confirm 0 "No such device" errors over a minute of `journalctl` monitoring afterward.
 
 ## Debug Logging
 

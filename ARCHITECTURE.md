@@ -199,14 +199,17 @@ The incoming AAC stream is dual-mono: the left and right channels carry independ
 | Left only | `[[1,0],[1,0]]` | Left channel → both outputs |
 | Right only | `[[0,1],[0,1]]` | Right channel → both outputs |
 
-**Runtime mode changes:** The matrix is baked into the pipeline string at creation. Changing mode tears down the RX pipeline and rebuilds it with a new string. TX pipeline and jitter buffer are unaffected.
+**Runtime mode changes:** The matrix is baked into the pipeline string at creation. Changing mode tears down the RX pipeline and rebuilds it with a new string. TX pipeline and jitter buffer are unaffected — **for the Behringer interface only** (see below for GoXLR).
 
 **Why not set the matrix property at runtime?**
 `Gst.util_set_object_arg` on a playing `audioconvert` element caused caps renegotiation that destabilised the pipeline. Rebuilding is simpler and more reliable.
 
-**Race condition protection:** Two measures prevent ALSA from getting stuck when modes are changed rapidly:
+**Race condition protection (Behringer interface):** Two measures prevent ALSA from getting stuck when modes are changed rapidly:
 1. **Debounce (250ms):** rapid calls cancel and reschedule — only the final mode gets applied.
 2. **`get_state(Gst.SECOND)`:** blocks until the old pipeline has fully released the ALSA device before the new one opens it. Without this, overlapping ALSA opens caused the playout buffer to loop.
+3. **`PipelineController._rx_rebuild_lock`:** serialises `_do_rx_rebuild()` against `_playout_loop()`'s `push-buffer` calls and against overlapping rebuild triggers, so two threads never manipulate `self.rx_pipeline`/`self.rx_appsrc` concurrently.
+
+**GoXLR interface uses a full reconnect instead** (`main.py`'s `_full_reconnect()`): stop, build a brand-new `PipelineController` (passing the target `rx_channel_mode` into its constructor so the right pipeline is built from the start), start. Discovered 2026-09-09: the GoXLR's TX (capture) and RX (playback) are two directions of the *same* USB audio device, and tearing down/reopening only the RX side in place while TX stays open reliably wedges the device (deterministic — reproduced with a single isolated mode switch, not just rapid clicking). A full stop/start cycles both directions together and has proven reliable under repeated stress-testing. This same full-reconnect path is also used for the Behringer hotplug rebuild (see §9) and for restoring a saved channel mode after `/api/connect`. The RX watchdog's auto-reconnect (§9/troubleshooting) also preserves the current channel mode across a reconnect, though it still resets other GoXLR-specific state (Bleep/PFL, fader colours) — see Known Limitations.
 
 **API:** `POST /api/rx_mode` with `{"mode": "stereo"|"left"|"right"}`. Mode is stored in `global_state` and restored on reconnect.
 
@@ -322,21 +325,28 @@ Used when a GoXLR Mini is present. On `start()`:
 
 **TX:** `alsasrc device=goxlr_broadcast ! audioconvert ! audio/x-raw,rate=48000,channels=2`
 
-**RX — two-source pipeline:** The ALSA `route` plugin cannot reliably expand 2 channels to the GoXLR's 10-channel playback stream (silent failure; S32LE-only device, broken ALSA constraint propagation). Instead, GStreamer's `audiomixmatrix` maps each source to its assigned GoXLR channels, and `audiomixer` combines them before writing to `hw:GoXLRMini,0`:
+**RX — two-source pipeline:** The ALSA `route` plugin cannot reliably expand 2 channels to the GoXLR's 10-channel playback stream (silent failure; S32LE-only device, broken ALSA constraint propagation). Instead, GStreamer's `audiomixmatrix` maps each source to its assigned GoXLR channels, and `audiomixer` combines them before writing to `hw:GoXLRMini,0` — **but only when there actually is a second source to combine:**
 
 ```
-# Codec RX → Game (ch 2-3) + Music (ch 6-7)
+# Behringer absent — no audiomixer at all, straight to alsasink
 ... ! audiomixmatrix in-channels=2 out-channels=10 matrix="<RX>" !
-audiomixer name=goxlr_mix !
 audioconvert ! audio/x-raw,format=S32LE !
 alsasink device=hw:GoXLRMini,0 sync=false
 
-# Behringer capture → Chat (ch 4-5)   [from extra_rx_source_bins()]
+# Behringer present — audiomixer combines both branches
+... ! audiomixmatrix in-channels=2 out-channels=10 matrix="<RX>" !
+audiomixer name=goxlr_mix ignore-inactive-pads=true min-upstream-latency=200000000 latency=200000000 !
+audioconvert ! audio/x-raw,format=S32LE !
+alsasink device=hw:GoXLRMini,0 sync=false
+
+# Behringer capture → Chat (ch 4-5)   [from extra_rx_source_bins(), appended when present]
 alsasrc device=hw:CODEC,0 ! audioconvert !
 audioresample ! audio/x-raw,rate=48000,channels=2 !
 audiomixmatrix in-channels=2 out-channels=10 matrix="<Behringer>" !
 goxlr_mix.
 ```
+
+**Why the conditional mixer (discovered 2026-09-09):** `audiomixer`'s automatic latency query always fails on this pipeline (`WARN aggregator: <goxlr_mix> Latency query failed`) — it never negotiates a value because it's combining a manually-fed `appsrc` branch (the decoded RX stream, PTS assigned by `_playout_loop()`) with a live `alsasrc` branch (Behringer capture), and defaults to assuming 0 latency. Symptoms observed: an audible echo, a "stretched cassette tape" pitch artifact, and — most confusingly — **complete, silent stalls of the mixer's entire output** (both Game and Music go silent) that happened even with only *one* input pad connected (Behringer physically unplugged), while everything upstream of the mixer (decode, `level` meter) kept working normally and nothing was posted to the GStreamer bus. `lost`/`late`/`jitter` in telemetry stayed at 0 throughout — this is not RTP packet loss, it's local to this element. Fix: skip `audiomixer` entirely in the single-source case (§9's `GoXLRInterface.rx_sink_bin()`/`extra_rx_source_bins()` both key off `GoXLRInterface.behringer_available()`, so they always agree), and when a second source is genuinely present, give the mixer an explicit latency budget (`min-upstream-latency`, `latency`, both matching the jitter buffer's 200ms) plus `ignore-inactive-pads=true` instead of relying on the broken auto-negotiation. Verified live on the PSA300 with the Behringer both absent and present — echo and stretching gone in both cases.
 
 **Fader layout:**
 
@@ -369,6 +379,10 @@ IPC calls triggered by button events run in a thread pool (`asyncio.to_thread`) 
 
 The goxlr-utility daemon (`goxlr-daemon.service`) must be running for GoXLR mode to activate. The daemon is detected by probing `/tmp/goxlr.socket`. See `GOXLR-MINI-LINUX.md` for full daemon setup.
 
+**Behringer hotplug (added 2026-09-09):** the same 5-second poll also calls `GoXLRInterface.behringer_available()` (checks `/proc/asound/cards` for `CODEC`) while running GoXLR, independent of the auto/fixed interface-mode setting above. On a change, it logs it and calls `_full_reconnect()` — the same full stop/start used for RX channel-mode changes (§5), not the lighter in-place RX rebuild, for the same ALSA-wedging reason. This means the Behringer can be plugged in or unplugged at any time without operator action.
+
+**Known gap:** any full reconnect (channel-mode switch, Behringer hotplug, or the RX watchdog's auto-reconnect — see Troubleshooting) calls `GoXLRInterface.start()` fresh, which silently resets Bleep/PFL state (`_studio_pfl = False`) and re-applies default fader colours/routing, with no indication to the operator that it happened. If PFL was engaged, the operator is silently dropped back to normal fader monitoring. Not yet fixed — would need PFL state to be captured before `stop()` and reapplied after the new interface's `start()` completes, in whichever of `main.py`'s several reconnect call sites triggers.
+
 ---
 
 ## 10. Current Limitations
@@ -377,7 +391,7 @@ The goxlr-utility daemon (`goxlr-daemon.service`) must be running for GoXLR mode
 
 **Loss concealment:** Packet repetition only. Produces stuttering on burst losses. No interpolation or algorithmic PLC.
 
-**Clock drift:** Not corrected. On multi-hour sessions, remote and local clocks drift tens of milliseconds. `audiorate` adapts but works blind (doesn't use RTP timestamps for reference).
+**Clock drift:** Not corrected. On multi-hour sessions, remote and local clocks drift tens of milliseconds. `audiorate` adapts but works blind (doesn't use RTP timestamps for reference). **Confirmed 2026-09-09** as the likely cause of a residual ~once-a-minute brief audio glitch (heard on both Game and Music, i.e. upstream of the per-bus split): with the audiomixer echo/stretching bug (§9) fixed, this was the only remaining audible artifact, and it produces zero signal in any instrumentation — `lost`/`late`/`jitter` in telemetry stay at exactly 0 across the glitches, and no xrun/underrun/error is logged. `_playout_loop()` in `pipeline_manager.py` currently derives each buffer's PTS from a fixed local frame-duration counter (`rx_pts += FRAME_DUR`, ignoring the RTP timestamp already parsed in `_rx_loop()`), so `audiorate` downstream has nothing but the local wall clock to correct against. **This is the next planned fix** — see Future Roadmap §12.4.
 
 **No SIP:** OPUS unsupported without SIP negotiation.
 
@@ -438,6 +452,11 @@ Check meters for input/output levels. If RX meters are frozen, jitter buffer is 
 1. **OPUS with SIP negotiation** — Better for poor links, requires SIP library
 2. **Improved loss concealment** — Interpolation or algorithmic PLC in C
 3. **Forward error correction** — RFC 5109 ULPFEC or custom XOR FEC
-4. **Clock drift correction** — Use RTP timestamps for PTS, let `audiorate` measure and compensate drift
+4. **Clock drift correction — NEXT PLANNED FIX.** Derive RX playback timestamps from the RTP timestamps themselves instead of the current fixed local frame counter, so `audiorate` corrects drift against the *source's* actual clock rather than blindly chasing the local wall clock. Confirmed 2026-09-09 as the cause of a residual ~once-a-minute brief glitch (see §10). Concrete starting points:
+   - `_rx_loop()` in `briclite/core/pipeline_manager.py` already parses `rtp_ts = struct.unpack("!I", data[4:8])[0]` per packet (RFC 3550, 90000 Hz clock, `_TS_INC = 3840` ticks/frame) but only uses it for `JitterBuffer.push()`'s jitter EWMA — it's discarded otherwise.
+   - `_playout_loop()` currently does `buf.pts = rx_pts; rx_pts += FRAME_DUR` (`FRAME_DUR = Gst.SECOND * _AAC_FRAME // _AAC_SAMP`), a pure local counter with no relationship to the incoming RTP timestamp.
+   - The fix needs to plumb the RTP timestamp for each payload through `JitterBuffer` (currently only `payload` bytes are stored/returned by `push()`/`pop()`; the RTP timestamp is used transiently in `push()` and dropped) so `_playout_loop()` can compute `buf.pts` from `(rtp_ts - first_rtp_ts) * Gst.SECOND / _RTP_CLOCK` instead of a fixed increment — establishing a fixed epoch (`first_rtp_ts`) at the first packet after each `reset()`, and handling the 32-bit RTP timestamp wraparound (`% (2**32)`, same pattern already used in the jitter calc).
+   - For concealment frames (`last_good` repeats, no real RTP timestamp available) still fall back to `rx_pts += FRAME_DUR` for that single frame, then resync to the RTP-derived value on the next real packet.
+   - Test by reproducing the current symptom first (leave the codec connected for several minutes on the PSA300 with the GoXLR, listen for the brief glitch, confirm `lost`/`late`/`jitter` stay at 0 across it) before and after the change, since there's no error/counter to compare against — only audible/listening confirmation via the operator.
 5. **Hardware display** — LCD/OLED status panel (header defined in config.json but not implemented)
 6. **OpenVPN auto-connect** — For secure outside broadcast links (config placeholder, not implemented)

@@ -408,6 +408,7 @@ On long sessions (several hours), the remote device clock and the Behringer ALSA
 - [ ] SSH working and passwordless sudo configured
 - [ ] Service user added to `audio` group
 - [ ] Behringer plugged in; `aplay -l` confirms device enumeration
+- [ ] **If using a GoXLR Mini:** plugged into its own direct USB host port, not sharing a hub with the Behringer or any USB peripherals (mixing USB speed classes on one hub caused repeated device resets — see `GOXLR-MINI-LINUX.md` §12)
 - [ ] All GStreamer packages installed including `gstreamer1.0-alsa` and `gstreamer1.0-fdkaac`
 - [ ] Python venv created with `--system-site-packages`
 - [ ] FastAPI/uvicorn installed in venv

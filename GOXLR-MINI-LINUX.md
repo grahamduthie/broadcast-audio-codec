@@ -133,9 +133,17 @@ CHANNELS: [1 89478485]   (anomalous range — route plugin constraint propagatio
 
 Even with explicit `format=S32LE` in GStreamer, audio does not reach the hardware. Root cause: the ALSA `route` plugin does not correctly handle the 2→10 channel asymmetry on this device.
 
-### GStreamer audiomixmatrix + audiomixer — confirmed working
+### GStreamer audiomixmatrix + audiomixer — confirmed working, but audiomixer needs explicit latency tuning
 
 Two `audiomixmatrix` elements (one per source) each expand their 2-channel input to 10 channels, mapping only to their assigned GoXLR bus slots. GStreamer's `audiomixer` then sums the two 10-channel streams before writing to the GoXLR.
+
+**Update 2026-09-09:** `audiomixer`'s automatic latency query always fails on this pipeline (`WARN aggregator: <goxlr_mix> Latency query failed`) — combining a manually-fed `appsrc` branch (codec RX, PTS assigned in Python) with a live `alsasrc` branch (Behringer) never lets it negotiate a value, so it assumes 0. Left untuned, this caused an audible echo, a pitch-stretching artifact, and — confusingly — complete silent stalls of the mixer's output that reproduced even with the Behringer *unplugged* (i.e. with `audiomixer` present but only one pad connected), while the RX `level` meter upstream kept reporting correctly and nothing was posted to the GStreamer bus. None of `lost`/`late`/`jitter` in briclite's own telemetry moved during these stalls — this is local to the element, not RTP loss.
+
+**Fix, now implemented in `briclite/interfaces/goxlr.py`:**
+1. `GoXLRInterface.rx_sink_bin()` only inserts `audiomixer` at all when `extra_rx_source_bins()` will actually return something (both key off the same `GoXLRInterface.behringer_available()` check, so they always agree) — with the Behringer absent, the pipeline goes straight from the RX matrix to `alsasink`, no aggregator in the path at all.
+2. When the Behringer *is* present, the mixer gets an explicit latency budget instead of relying on the broken auto-negotiation: `audiomixer name=goxlr_mix ignore-inactive-pads=true min-upstream-latency=200000000 latency=200000000` (200ms, matching the jitter buffer). See `_GOXLR_MIX_PROPS` in `goxlr.py`.
+
+Verified live on the PSA300 with the Behringer both absent and present after this fix — echo and stretching gone in both cases. A separate, smaller residual issue (a ~once-a-minute brief dropout, present even with this fixed) is tracked in `ARCHITECTURE.md` §10/§12 as clock-drift correction — the next planned fix.
 
 **Codec RX matrix** (2-in → 10-out, rows = output ch, cols = RX L/R):
 ```
@@ -403,24 +411,30 @@ return "alsasrc device=goxlr_broadcast ! audioconvert ! audio/x-raw,rate=48000,c
 
 ### `rx_sink_bin()` and `extra_rx_source_bins()`
 
-`rx_sink_bin()` returns a GStreamer fragment that maps codec RX to Game (ch 2–3) and Music (ch 6–7), inserts a named `audiomixer`, and writes to `hw:GoXLRMini,0`. `extra_rx_source_bins()` returns a second fragment that captures from the Behringer (`hw:CODEC,0`), maps it to Chat (ch 4–5), and connects to the same `audiomixer`:
+`rx_sink_bin()` returns a GStreamer fragment that maps codec RX to Game (ch 2–3) and Music (ch 6–7) and writes to `hw:GoXLRMini,0`. **Updated 2026-09-09:** it only inserts a named `audiomixer` when `GoXLRInterface.behringer_available()` is true — see §5's "audiomixer needs explicit latency tuning" above for why. `extra_rx_source_bins()` (same `behringer_available()` check, so the two methods always agree) returns a second fragment that captures from the Behringer (`hw:CODEC,0`), maps it to Chat (ch 4–5), and connects to the mixer:
 
 ```python
-# rx_sink_bin() — appended to the jitter-buffer decode chain
+# rx_sink_bin() — Behringer absent: no mixer, straight to alsasink
 'audioresample ! audio/x-raw,rate=48000,channels=2 ! '
 'audiomixmatrix in-channels=2 out-channels=10 matrix="<RX matrix>" ! '
-'audiomixer name=goxlr_mix ! '
 'audioconvert ! audio/x-raw,format=S32LE ! '
 'alsasink device=hw:GoXLRMini,0 sync=false'
 
-# extra_rx_source_bins()[0] — separate source, appended as a second pipeline branch
+# rx_sink_bin() — Behringer present: mixer with explicit latency budget
+'audioresample ! audio/x-raw,rate=48000,channels=2 ! '
+'audiomixmatrix in-channels=2 out-channels=10 matrix="<RX matrix>" ! '
+'audiomixer name=goxlr_mix ignore-inactive-pads=true min-upstream-latency=200000000 latency=200000000 ! '
+'audioconvert ! audio/x-raw,format=S32LE ! '
+'alsasink device=hw:GoXLRMini,0 sync=false'
+
+# extra_rx_source_bins()[0] — separate source, appended as a second pipeline branch, only when present
 'alsasrc device=hw:CODEC,0 ! audioconvert ! '
 'audioresample ! audio/x-raw,rate=48000,channels=2 ! '
 'audiomixmatrix in-channels=2 out-channels=10 matrix="<Behringer matrix>" ! '
 'goxlr_mix.'
 ```
 
-`pipeline_manager.py` appends each string from `extra_rx_source_bins()` to the RX pipeline string before calling `Gst.parse_launch()`. The Behringer source starts and stops with the codec pipeline.
+`pipeline_manager.py` appends each string from `extra_rx_source_bins()` to the RX pipeline string before calling `Gst.parse_launch()`. The Behringer source starts and stops with the codec pipeline, and is hot-pluggable — see `ARCHITECTURE.md` §9 "Behringer hotplug."
 
 ### IPC — direct socket, no third-party library
 
@@ -449,7 +463,15 @@ When applying a routing matrix, **omit `ChatMic` from all rows** to avoid these 
 
 ---
 
-## 12. Useful References
+## 12. USB Topology — Keep the GoXLR Off Mixed-Speed Hubs
+
+**Discovered 2026-09-09 on the PSA300.** The GoXLR Mini is a USB **high-speed** (480 Mbps) device. The Behringer UCA202 is **full-speed** (12 Mbps), and typical USB keyboard/mouse dongles are **low-speed** (1.5 Mbps). Putting all three behind the same external hub caused the Behringer and the keyboard/mouse to repeatedly reset (`dmesg`: `usb 1-1.1.1: reset full-speed USB device`, `usb 1-1.1.4: reset low-speed USB device`, recurring every few minutes) while the GoXLR itself stayed completely stable — a known class of problem with hub chipsets that struggle to reliably bridge a mix of speed classes on the same hub. Confirmed via `journalctl -u briclite`: the Behringer's ALSA capture threw `SNDRV_PCM_IOCTL_DELAY failed (-19): No such device` **886 times in 10 minutes** while wedged.
+
+**Fix:** plug the GoXLR directly into a host USB port (bypassing any hub entirely), and put the Behringer + any low-speed peripherals on a separate hub/port. On the PSA300 (only two physical ports: one USB3, one standard USB2), this means: GoXLR → USB3 port direct; external hub (Behringer + keyboard/mouse) → the other port. Confirmed with `lsusb -t` (GoXLR shows as a direct child of the root hub, no longer sharing a downstream hub with anything) and zero `No such device` errors over a full minute of monitoring afterward, versus hundreds per 10 minutes before.
+
+This was a genuine hardware/wiring issue, not a code bug — but it directly caused the audiomixer instability in §5 to manifest far more severely when combined with the Behringer's second-mic branch (the flaky capture source was one of the aggregator's two input pads). Even after the audiomixer latency fix, keep the GoXLR isolated from mixed-speed devices as a matter of course on any new deployment.
+
+## 13. Useful References
 
 | Resource | URL |
 |---|---|
