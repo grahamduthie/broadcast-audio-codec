@@ -1,0 +1,22 @@
+{
+  "system": {
+    "device_mode": "STUDIO_RECEIVER",
+    "audio_interface": "goxlr",
+    "web_port": 8080,
+    "bind_address": "127.0.0.1"
+  },
+  "audio_network": {
+    "target_ip": "217.36.229.106",
+    "tx_port": 5004,
+    "rx_port": 5004,
+    "buffer_ms": 200,
+    "alsa_device": "unused-on-macos"
+  },
+  "goxlr": {
+    "_comment": "Leave device UIDs empty to test codec path via built-in audio. Fill in after plugging in GoXLR+Behringer and running: gst-device-monitor-1.0 Audio/Source Audio/Sink",
+    "mac_tx_device": "",
+    "mac_rx_device": "",
+    "mac_behringer_device": "",
+    "capture_channels": 21
+  }
+}

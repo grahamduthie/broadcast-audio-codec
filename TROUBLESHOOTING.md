@@ -324,7 +324,27 @@ Check the web dashboard's jitter metric and packet loss counter. If:
 3. If it recurs with the fix in place, the latency values (currently 200ms, matching the jitter buffer) may need tuning, or GStreamer's `audiomixer`/`aggregator` implementation may have changed behaviour in a newer version — check `gst-inspect-1.0 audiomixer`'s Element Properties for what's available.
 
 ### If you still hear occasional brief (~1 second or less) dropouts after the above
-This is a **different** issue, produces zero signal in `lost`/`late`/`jitter` or any log warning — confirmed via a 2.5-minute live watch on 2026-09-09 with dropouts audible throughout and all three counters staying at 0. It was initially attributed to clock drift with a fix planned around RTP-timestamp-derived PTS, but that diagnosis didn't hold up (see `ARCHITECTURE.md` §10/§12.4 for why) — every RX sink runs `sync=false` on a direct `hw:` ALSA device, so the more likely cause is a transient scheduling stall (GIL/CPU contention on the weak embedded hardware) starving that sink, not clock drift. **Mitigation applied and deployed 2026-09-09** (`ARCHITECTURE.md` §12.4): larger RX queue/ALSA buffers, and `SCHED_FIFO` priority for the playout thread — the `CAP_SYS_NICE` grant is live on the PSA300 unit and confirmed active (`journalctl` shows `Playout thread: SCHED_FIFO priority 10`, not the earlier permission-denied warning). **Still not confirmed whether the glitch itself is actually gone** — needs a multi-hour soak listen; if it recurs, see §12.4's follow-up note on adaptive playout correction for genuine oscillator drift.
+This is a **different, lower-level GoXLR USB playback issue**. Live isolation on 2026-09-09 proved it is not RTP loss, source audio, clock drift, GIL scheduling, the jitter buffer, `audiorate`, `audiomixer`, resampling, or GStreamer: a native 10-channel S32LE/48 kHz `aplay` tone reproduced it while ALSA's buffer remained nearly full and no xrun/kernel USB error was logged. `goxlr-daemon` greatly increases its frequency but is not the sole cause. Do not keep increasing application buffers or implement adaptive RTP correction for this symptom. Follow `CURRENT-STATUS.md` for the current kernel A/B test and exact diagnostic command.
+
+## Issue: boot waits for networking or loses SSH after a kernel/reboot change
+
+On the PSA300 X10SBA-L, both Intel I210 ports incorrectly advertise the same firmware onboard name (`eno1`). udev can log `Failed to rename ... to 'eno1': File exists`, leaving the second NIC with an order-dependent fallback name such as `eth1`. A Netplan file keyed only to `eno1` may therefore configure the unplugged socket while the connected socket remains unmanaged. Symptoms are a long `systemd-networkd-wait-online` job, only an IPv6 link-local address, no default route, and UFW dropping SSH because its rules name the other interface.
+
+The live PSA300 was repaired on 2026-09-09 by matching the connected port's permanent MAC and assigning a collision-proof name:
+
+```yaml
+network:
+  version: 2
+  ethernets:
+    codec0:
+      match:
+        macaddress: 0c:c4:7a:b0:c9:d1
+      set-name: codec0
+      dhcp4: true
+      optional: true
+```
+
+UFW must allow TCP 22/80 and UDP 5004 on `codec0`. If recovering from the console, a temporary `ip addr add 172.16.10.213/24 dev <connected-interface>` restores LAN IP, but it does not add a gateway/DNS; apply the MAC-matched Netplan config for the complete fix.
 
 ## Issue: deploying a code change causes an extended outage and/or resets GoXLR PFL
 
@@ -350,20 +370,58 @@ Done this way, total outage is ~4-5 seconds and the watchdog never fires.
 ### GoXLR PFL comes back off after a deploy no matter what
 Expected, not (yet) fixed — see `ARCHITECTURE.md` §12 roadmap item 5. The 2026-09-09 fix only preserves PFL across in-process reconnects (mode switch, hotplug, watchdog auto-reconnect, manual disconnect/reconnect); a full `systemctl restart` wipes the whole process's memory including `GoXLRInterface._studio_pfl`, and there's nowhere outside the process that remembers PFL was engaged. Just re-press Bleep after a deploy.
 
+## Issue: GoXLR faders/colours look wrong after a reboot or service restart (wrong layout, wrong colours, Music/studio-return inaudible)
+
+### Root cause (found 2026-09-09)
+The correct fader layout, routing, and colours (`ARCHITECTURE.md` §9 "GoXLRInterface", `GOXLR-MINI-LINUX.md` §10) are asserted in code by `GoXLRInterface.start()`, **not** loaded from any saved `.goxlr` profile file. `start()` only runs when the pipeline actually connects — `POST /api/connect`, a channel-mode/Behringer-hotplug `_full_reconnect()`, or the RX watchdog's auto-reconnect. It does **not** run just because `briclite.service` (or the host) started — `main.py`'s `lifespan()` only constructs the `PipelineController`, it doesn't start it.
+
+So after any reboot or `systemctl restart`, until something actually connects, the physical GoXLR is left showing whatever the `goxlr-utility` daemon's on-disk profile last had — on the PSA300 this is a profile literally named `Default`, unchanged since 1 Jun, with a different fader mapping (A=Mic, B=Music, C=Chat, D=System) and Music channel volume 0. This looks alarming (wrong colours, wrong fader assignment, the studio-return tone/audio inaudible) but is expected pre-connect state, not a fault, and there is no other "correct" profile file hiding somewhere to load instead.
+
+### Diagnosis
+```bash
+goxlr-client --status-json | python3 -c "
+import json,sys
+d=json.load(sys.stdin); m=list(d['mixers'].values())[0]
+print({k:v['channel'] for k,v in m['fader_status'].items()})
+print(m['levels']['volumes'])
+"
+# Expect A=Mic, B=Chat, C=Game, D=LineIn once connected; anything else means start() hasn't run yet.
+journalctl -u briclite.service | grep -i "api/connect"   # confirm whether a connect has actually happened this boot
+```
+
+### Fix
+Call `POST /api/connect` (see the deploy round-trip above) — this reasserts the correct layout, routing, and colours from code within a second or two. Do **not** try to fix it by loading a different saved `.goxlr` profile via `goxlr-client profiles device load` or the GoXLR app — none of the profile files on disk match briclite's managed layout, and loading one has no lasting effect since the next `start()` overwrites it anyway.
+
 ## Issue: Behringer (or other USB peripherals) repeatedly disconnect, reset, or throw ALSA "No such device" errors
 
 ### Root cause
-Mixing USB speed classes (the GoXLR is high-speed/480Mbps, the Behringer is full-speed/12Mbps, keyboard/mouse dongles are typically low-speed/1.5Mbps) behind the **same** external hub can cause the slower devices to repeatedly reset, even though the GoXLR itself stays completely stable. Confirmed on the PSA300: the Behringer's ALSA capture threw `SNDRV_PCM_IOCTL_DELAY failed (-19): No such device` 886 times in a 10-minute window while sharing a hub with the GoXLR.
+Mixing USB speed classes behind the **same** external hub can cause the slower devices to repeatedly reset. Two distinct instances of this have now been seen on the PSA300:
+
+1. **GoXLR (high-speed/480Mbps) sharing a hub with the Behringer (full-speed/12Mbps).** Confirmed and fixed 2026-09-09 — see "Fix" below. The GoXLR itself always stayed stable; the Behringer's ALSA capture threw `SNDRV_PCM_IOCTL_DELAY failed (-19): No such device` 886 times in a 10-minute window.
+2. **Behringer (full-speed/12Mbps) sharing a hub with low-speed/1.5Mbps HID devices** (mouse, keyboard) — the interaction the GoXLR/Behringer fix above didn't touch, since it only moved the GoXLR off that hub, not the Behringer. Confirmed overnight 2026-09-09→10: the kernel logged 5 unattended `usb 1-1.2.1: reset full-speed USB device` / `usb 1-1.2.4: reset low-speed USB device` events (`journalctl -k`), each one leaving `pipeline_manager.py`'s Behringer `alsasrc` (or, if it was mid-write, `goxlr_mix`'s downstream `alsasink`) holding a PCM handle to a device the kernel had already reset out from under it. Before the fix below existed, GStreamer's ALSA element doesn't treat that as fatal to the whole pipeline — it just keeps re-issuing the same failing ioctl (`SNDRV_PCM_IOCTL_DELAY`) from its clock-polling thread forever, because nothing ever tore the pipeline down to reopen the handle. One occurrence flooded the journal with **583,838** lines (~430MB) over ~8 hours before anyone noticed. This class of full/low-speed-behind-one-EHCI-hub reset is a long-standing, still-unresolved Linux kernel USB quirk — see the LKML thread ["USB EHCI: repeated resets on full and low speed devices"](https://lkml.kernel.org/lkml/5393eab7-8203-1696-ffc6-7e06cd63638a@oracle.com/T/) — so it should be expected to recur; it is not something briclite (or this box's 2015-era EHCI controller) can prevent outright.
+
+Critically, **instance 2 is invisible to `_interface_monitor`'s presence poll** (`GoXLRInterface.behringer_available()` in `main.py`, polled every 5s): a USB *reset* leaves the card entry in `/proc/asound/cards` in place the whole time — only a full unplug/replug removes it — so `behringer_available()` never changes and the hotplug-driven `_full_reconnect()` never fires on its own.
 
 ### Diagnosis
 ```bash
 journalctl -u briclite --since "-10 min" | grep -c "No such device"
-lsusb -t          # look for the GoXLR sharing a downstream hub with other devices
+lsusb -t                          # which devices share which hub, and at what speed
 sudo dmesg | grep -iE "usb.*reset"
+journalctl --disk-usage           # check whether a past flood already ate disk space
 ```
 
-### Fix
-Plug the GoXLR directly into a host USB port, bypassing any hub. Put the Behringer and any other peripherals on a separate hub/port. See `GOXLR-MINI-LINUX.md` §12 for the full writeup and the PSA300's specific two-port wiring. Verify with `lsusb -t` (GoXLR should be a direct child of the root hub) and confirm 0 "No such device" errors over a minute of `journalctl` monitoring afterward.
+### Fix — physical (for instance 1, GoXLR/Behringer sharing a hub)
+Plug the GoXLR directly into a host USB port, bypassing any hub. Put the Behringer and any other peripherals on a separate hub/port. See `GOXLR-MINI-LINUX.md` §12 for the full writeup and the PSA300's specific two-port wiring. Verify with `lsusb -t` (GoXLR should be a direct child of the root hub) and confirm 0 "No such device" errors over a minute of `journalctl` monitoring afterward. **Already done and confirmed stable — the GoXLR has not been implicated in any reset event since.**
+
+### Fix — physical, not yet done (for instance 2, Behringer/HID sharing a hub)
+The Behringer currently shares its hub with the mouse and keyboard (`lsusb -t`, confirmed 2026-09-10: both live on `Dev 004`, the second-tier hub). Moving the Behringer to its own hub/port, away from the low-speed HID devices, is the same class of fix as instance 1 and should reduce reset frequency further — not yet applied since it requires hands-on access to the PSA300's rear panel.
+
+### Fix — software (automatic recovery + log safety, added 2026-09-10)
+Since the underlying USB-level resets can't be eliminated outright (see LKML thread above), `pipeline_manager.py`'s `_on_bus_message` now recognises a GST bus `ERROR` whose text matches `_DEVICE_ERROR_PATTERNS` ("disconnected", "no such device", "input/output error") as a device-loss event rather than an ordinary stream error, and calls back into `main.py`'s `_on_device_error()`, which waits `_DEVICE_ERROR_SETTLE_S` (1.5s, to let the USB reset finish) and then runs the same `_full_reconnect()` used for channel-mode switches and Behringer hotplug — closing and reopening every ALSA handle, which stops the spinning thread and clears the flood. Concurrent triggers are coalesced into a single follow-up retry rather than stacking. This closes the gap the presence-poll watchdog missed (see "Root cause" above) — a reset event is now handled within ~2 seconds instead of persisting indefinitely.
+
+As a disk-space backstop independent of that fix, `briclite.service` also now sets `LogRateLimitIntervalSec=30s` / `LogRateLimitBurst=1000` (see `BUILD.md` §7) — systemd's own default (10000/30s) is far too loose to catch a sustained ~20 lines/sec spin like the one observed.
+
+Verify after a reset event: `journalctl -u briclite --since "-2 min" | grep -i "Device-level GST error"` should show at most one or two reconnects, not a runaway flood, and `journalctl --disk-usage` should stay flat.
 
 ## Debug Logging
 

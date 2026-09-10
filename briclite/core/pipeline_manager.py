@@ -36,6 +36,16 @@ _TS_INC    = _AAC_FRAME * _RTP_CLOCK // _AAC_SAMP   # 3840
 _RX_QUEUE_BUFFERS   = 50        # ~2.1s of compressed AAC frames, was 10 (~430ms)
 _PLAYOUT_RT_PRIORITY = 10       # SCHED_FIFO priority for the playout thread (Linux only)
 
+# Substrings (lowercased) that identify a GST_MESSAGE_ERROR as the underlying
+# ALSA device having gone away rather than an ordinary stream/format error —
+# e.g. a USB audio device (Behringer) dropped and re-enumerated by the kernel
+# mid-session. When one of these hits the bus, the element that lost its
+# device keeps existing but its clock-polling thread spins forever re-issuing
+# the same failing ioctl (observed: SNDRV_PCM_IOCTL_DELAY, hundreds of
+# thousands of log lines over several hours) because nothing ever tears the
+# pipeline down. See TROUBLESHOOTING.md "Behringer USB resets".
+_DEVICE_ERROR_PATTERNS = ("disconnected", "no such device", "input/output error")
+
 
 def _seq_after(a: int, b: int) -> bool:
     return 0 < ((b - a) % _WRAP) < _WRAP // 2
@@ -113,7 +123,8 @@ class JitterBuffer:
 
 class PipelineController:
 
-    def __init__(self, config: dict, interface: AudioInterface, rx_channel_mode: str = "stereo"):
+    def __init__(self, config: dict, interface: AudioInterface, rx_channel_mode: str = "stereo",
+                 on_device_error=None):
         Gst.init(None)
         net = config["audio_network"]
         self.interface  = interface
@@ -121,6 +132,11 @@ class PipelineController:
         self.tx_port    = net["tx_port"]
         self.rx_port    = net["rx_port"]
         self.latency_ms = net.get("buffer_ms", 200)
+
+        # Coroutine (no args) scheduled on self.event_loop the first time a
+        # device-loss error hits the bus — see _DEVICE_ERROR_PATTERNS.
+        self.on_device_error      = on_device_error
+        self._device_error_seen   = False
 
         self.event_loop = None
         self.is_active  = False
@@ -139,18 +155,29 @@ class PipelineController:
         self.glib_loop   = GLib.MainLoop()
         self.last_rx_packet = 0.0
 
+        # Ground truth for "does the currently-built RX pipeline actually
+        # include an extra source (e.g. the Behringer)?" — set on every
+        # (re)build, from whichever code path triggered it. main.py's
+        # _interface_monitor compares this against live presence instead of
+        # tracking its own separate "last seen" flag, so a rebuild triggered
+        # by something else (e.g. on_device_error) can't leave the monitor's
+        # bookkeeping stale and the branch silently missing thereafter.
+        self.rx_extra_sources_active = False
+
         self._build_pipelines()
 
     def _build_rx_pipeline(self, mode: str):
         matrix = _MATRIX_STRINGS.get(mode, _MATRIX_STRINGS["stereo"])
+        rx_rate = self.interface.rx_sample_rate()
+        self.rx_extra_sources_active = bool(self.interface.extra_rx_source_bins())
         rx_str = (
             f"appsrc name=rx_src is-live=true format=time block=false ! "
             f"queue max-size-buffers={_RX_QUEUE_BUFFERS} max-size-bytes=0 max-size-time=0 ! "
             f"audio/mpeg,mpegversion=4,stream-format=adts ! "
             f"avdec_aac ! audioconvert ! "
             f'audiomixmatrix name=rx_router in-channels=2 out-channels=2 matrix="{matrix}" ! '
-            f"level name=rx_meter ! audioresample ! audiorate ! "
-            f"audio/x-raw,rate=44100,channels=2 ! "
+            f"level name=rx_meter ! audioresample ! "
+            f"audio/x-raw,rate={rx_rate},channels=2 ! "
             f"{self.interface.rx_sink_bin()}"
         )
         for extra in self.interface.extra_rx_source_bins():
@@ -374,6 +401,14 @@ class PipelineController:
         if t == Gst.MessageType.ERROR:
             err, dbg = message.parse_error()
             logger.error(f"GST ERROR: {err} | {dbg}")
+            if (self.is_active and self.on_device_error and not self._device_error_seen
+                    and any(p in str(err).lower() for p in _DEVICE_ERROR_PATTERNS)):
+                self._device_error_seen = True
+                logger.warning(
+                    "Device-level GST error — the underlying ALSA device likely "
+                    "reset/dropped; triggering automatic reconnect"
+                )
+                asyncio.run_coroutine_threadsafe(self.on_device_error(), self.event_loop)
         elif t == Gst.MessageType.WARNING:
             w, dbg = message.parse_warning()
             logger.warning(f"GST WARN: {w}")

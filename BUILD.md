@@ -85,6 +85,28 @@ Apply immediately:
 sudo sysctl -p
 ```
 
+### 3.4 Stable network-interface naming
+
+Do not rely on `eno1`/`eth1` when two identical NICs expose broken or duplicate firmware onboard indices. Match the connected port by permanent MAC address and give it a project-specific name in Netplan:
+
+```yaml
+network:
+  version: 2
+  ethernets:
+    codec0:
+      match:
+        macaddress: 00:11:22:33:44:55  # replace with `ethtool -P <interface>`
+      set-name: codec0
+      dhcp4: true
+      optional: true
+```
+
+Run `sudo netplan generate` before `sudo netplan apply`. The live PSA300 X10SBA-L needs this because both Intel I210 ports claim the firmware name `eno1`; without the MAC match, the connected port can be left unmanaged and boot waits for the unplugged port.
+
+### 3.5 PSA300 UEFI fallback
+
+The live X10SBA-L's 2015 AMI firmware rejects EFI NVRAM writes from Linux and may retain a bad boot order (generic Hard Drive and Network before inactive Ubuntu entries). Ensure the standard fallback directory contains `BOOTX64.EFI`, `grubx64.efi`, and `grub.cfg`. On the live unit, the missing GRUB files were copied from `/boot/efi/EFI/Ubuntu/` into `/boot/efi/EFI/BOOT/` and hash-verified on 2026-09-09. A normal unattended firmware reboot still needs validation; do not assume `efibootmgr` succeeded if it reports `Input/output error`.
+
 ---
 
 ## 4. Dependencies
@@ -266,6 +288,8 @@ Environment=GST_DEBUG=2
 AmbientCapabilities=CAP_SYS_NICE
 CapabilityBoundingSet=CAP_SYS_NICE
 LimitRTPRIO=20
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=1000
 
 [Install]
 WantedBy=multi-user.target
@@ -278,6 +302,8 @@ sudo systemctl enable --now briclite.service
 
 `GST_DEBUG=2` keeps GStreamer error and warning messages visible in `journalctl`. Remove it once the unit is stable in production.
 
+`LogRateLimitIntervalSec`/`LogRateLimitBurst` cap this unit's journal output at 1000 lines per 30s (journald collapses the rest into a "N messages suppressed" line). This is a disk-space backstop, not the primary fix, for the class of fault documented in TROUBLESHOOTING.md "Behringer USB resets" — a spinning ALSA element can otherwise log ~20 lines/sec indefinitely (583,838 lines / ~430MB observed overnight 2026-09-09→10 before `pipeline_manager.py`'s device-error auto-reconnect existed). systemd's own defaults (10000 burst/30s) are far too loose to catch a sustained low-rate spin like this one.
+
 `CAP_SYS_NICE`/`LimitRTPRIO=20` let the RX playout thread (`_playout_loop()` in `pipeline_manager.py`) raise itself to `SCHED_FIFO` priority, so a brief GIL/CPU scheduling stall can't starve the direct `hw:` ALSA sink and cause an audible glitch — see ARCHITECTURE.md §10/§12.4. Without this grant the process falls back to normal scheduling and just logs a warning; it is not required for the service to run, only to get the full benefit of this hardening. **Granted and confirmed live on the PSA300 2026-09-09** (`journalctl` shows `Playout thread: SCHED_FIFO priority 10`). **Applying it to an already-running unit requires `daemon-reload` + a service restart, which briefly drops the live RTP session — schedule that deliberately rather than during a broadcast.**
 
 **Whenever you restart the live service (any code deploy included), reconnect immediately in the same breath rather than as a separate step** — the codec does not auto-reconnect on boot, and leaving more than ~10s between the restart finishing and calling `/api/connect` risks a second, fully automatic outage (the remote drops its own session on the TX gap, then our RX watchdog auto-reconnects again ~10-12s later) plus a silent GoXLR PFL reset each time this happens. See `TROUBLESHOOTING.md` → "Issue: deploying a code change causes an extended outage and/or resets GoXLR PFL" for the exact one-shot restart+reconnect script (confirmed ~4-5s total outage, no cascade, vs. ~76s hit doing it as two separate steps).
@@ -288,13 +314,12 @@ sudo systemctl enable --now briclite.service
 
 Configure UFW to allow SSH, web UI, and RTP audio. Adjust interface names and IP ranges to match your network topology.
 
-Example for a studio with management LAN on `eno1` and internet feed on `eth0`:
+Example for a studio whose MAC-matched management interface is `codec0`:
 
 ```bash
-sudo ufw allow in on eno1 to any port 22   proto tcp   # SSH from LAN
-sudo ufw allow in on eno1 to any port 8080 proto tcp   # Web UI from LAN
-sudo ufw allow in on eno1 to any port 5004 proto udp   # RTP from LAN
-sudo ufw allow in on eth0 to any port 5004 proto udp   # RTP from internet/satellite
+sudo ufw allow in on codec0 to any port 22   proto tcp   # SSH from LAN
+sudo ufw allow in on codec0 to any port 80   proto tcp   # Web UI from LAN
+sudo ufw allow in on codec0 to any port 5004 proto udp   # RTP from LAN
 sudo ufw --force enable
 ```
 
@@ -336,7 +361,7 @@ Web UI: `http://10.0.0.50:8080` (adjust IP as needed)
 
 Verify with tcpdump:
 ```bash
-sudo tcpdump -i eno1 -n 'port 5004' -c 20
+sudo tcpdump -i codec0 -n 'port 5004' -c 20
 ```
 
 Expected: alternating packets from the server and the remote end. If the remote device supports codec auto-detection, it will show acknowledgment packets of varying sizes once it detects the incoming AAC stream.
@@ -405,7 +430,7 @@ Not implemented. Would require either:
 
 ### Clock drift
 
-On long sessions (several hours), the remote device clock and the Behringer ALSA clock will drift by tens of milliseconds. `audiorate` in the RX pipeline inserts or drops samples to maintain continuity, but it is working blind because RTP timestamps are not used for PTS derivation. A future improvement is to derive buffer PTS from RTP timestamps, which allows `audiorate` to detect and compensate drift correctly.
+The earlier `audiorate`/RTP-timestamp correction proposal does not apply to the observed GoXLR glitch: RTP timestamps are nominal counters in this protocol and `sync=false` means PTS does not pace the direct ALSA sink. `audiorate` was removed during live isolation without changing the symptom. The fault reproduced with native `aplay`; see `CURRENT-STATUS.md`.
 
 ---
 

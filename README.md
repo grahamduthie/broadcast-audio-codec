@@ -15,6 +15,7 @@ This project enables standalone broadcast-grade audio transport from a headless 
 ## Quick Start
 
 See **[BUILD.md](BUILD.md)** for the complete from-scratch build and deployment guide.
+For the current live investigation and exact PSA300 state, read **[CURRENT-STATUS.md](CURRENT-STATUS.md)** first.
 
 ## Project Structure
 
@@ -82,7 +83,7 @@ pip install -r requirements.txt
 
 - **OPUS codec** — Supported by some devices but requires SIP negotiation (not implemented)
 - **Loss concealment** — Packet repetition only (no interpolation or algorithmic PLC)
-- **Clock drift** — Not corrected on long sessions (monitored by `audiorate` element)
+- **GoXLR Linux USB playback glitch** — Reproduces with native ALSA and is strongly aggravated by `goxlr-daemon`; the newer kernel is under test. See `CURRENT-STATUS.md`.
 
 See Section 12 of BUILD.md for future work roadmap.
 

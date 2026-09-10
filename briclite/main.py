@@ -60,6 +60,12 @@ async def _cancel_task(task: Optional[asyncio.Task]) -> None:
 _RX_WATCHDOG_S = 10.0
 _full_reconnect_lock = asyncio.Lock()
 
+# Settle time given to a device (e.g. a Behringer that just underwent a USB
+# reset) to finish re-enumerating before we try to reopen its ALSA handle.
+_DEVICE_ERROR_SETTLE_S = 1.5
+_device_error_lock = asyncio.Lock()
+_device_error_retry_pending = False
+
 
 async def _full_reconnect(rx_channel_mode: Optional[str] = None) -> None:
     """Stop and fully rebuild the pipeline (both TX and RX together) rather than
@@ -80,8 +86,44 @@ async def _full_reconnect(rx_channel_mode: Optional[str] = None) -> None:
         mode = rx_channel_mode if rx_channel_mode is not None else controller.rx_channel_mode
         controller.stop(loop)
         await asyncio.sleep(0.3)
-        controller = PipelineController(config, interface, rx_channel_mode=mode)
+        controller = PipelineController(config, interface, rx_channel_mode=mode,
+                                         on_device_error=_on_device_error)
         controller.start(loop)
+
+
+async def _on_device_error() -> None:
+    """Called by a PipelineController when a GST bus error indicates the
+    underlying ALSA device (e.g. the Behringer) reset or dropped out from
+    under it — see pipeline_manager._DEVICE_ERROR_PATTERNS.
+
+    A USB reset here leaves the ALSA card entry in place (so the presence
+    poll in _interface_monitor sees no change) while the open PCM handle
+    becomes permanently unusable and the element that held it spins forever
+    re-issuing the same failing ioctl — this is what flooded the journal
+    overnight on 2026-09-10 (see TROUBLESHOOTING.md "Behringer USB resets").
+    A full reconnect closes and reopens every ALSA handle, which both clears
+    the spin and picks the device back up once its reset has settled.
+
+    If another error arrives while a reconnect triggered by this function is
+    already running, it's coalesced into a single follow-up retry rather than
+    stacking overlapping reconnects or being silently dropped.
+    """
+    global _device_error_retry_pending
+    log = logging.getLogger("watchdog")
+    if _device_error_lock.locked():
+        _device_error_retry_pending = True
+        log.warning("Device-error reconnect already in progress — will retry once more when it finishes")
+        return
+    async with _device_error_lock:
+        while True:
+            log.warning(f"Device-level pipeline error — reconnecting in {_DEVICE_ERROR_SETTLE_S}s")
+            await asyncio.sleep(_DEVICE_ERROR_SETTLE_S)
+            await _full_reconnect()
+            await _sync_goxlr_state(interface)
+            log.info("Automatic reconnect after device error complete")
+            if not _device_error_retry_pending:
+                break
+            _device_error_retry_pending = False
 
 
 async def _rx_watchdog():
@@ -105,7 +147,8 @@ async def _rx_watchdog():
             mode = controller.rx_channel_mode
             controller.stop(loop)
             await asyncio.sleep(1.0)
-            controller = PipelineController(config, interface, rx_channel_mode=mode)
+            controller = PipelineController(config, interface, rx_channel_mode=mode,
+                                             on_device_error=_on_device_error)
             controller.start(loop)
             await _sync_goxlr_state(interface)
             log.info("Auto-reconnect complete")
@@ -119,22 +162,30 @@ async def _interface_monitor():
     Behringer (second mic) being plugged/unplugged and rebuilds just the RX
     pipeline to pick it up — that device is optional and must not require a
     full interface switch to recover.
+
+    Compares live presence against controller.rx_extra_sources_active (what
+    the *running* pipeline actually has) rather than a separately-tracked
+    last-seen value here. A rebuild triggered by something else — notably
+    on_device_error's auto-reconnect, which can land while the Behringer is
+    mid-reset and rebuild without it — would otherwise leave a locally
+    remembered flag stale and the Behringer branch silently missing from the
+    mix from then on, even after the device comes back. Confirmed 2026-09-10
+    by deliberately deauthorizing/reauthorizing the Behringer mid-session and
+    watching this exact desync happen with the old (locally-tracked) logic.
     """
     global controller, interface
     log = logging.getLogger("main")
     _auto_mode = config.get("system", {}).get("audio_interface", "auto") == "auto"
     pfl_task: Optional[asyncio.Task] = None
-    behringer_present = GoXLRInterface.behringer_available() if isinstance(interface, GoXLRInterface) else False
     try:
         if isinstance(interface, GoXLRInterface):
             pfl_task = asyncio.create_task(interface.monitor_pfl())
         while True:
             await asyncio.sleep(5)
 
-            if isinstance(interface, GoXLRInterface):
+            if isinstance(interface, GoXLRInterface) and controller.is_active:
                 now_present = GoXLRInterface.behringer_available()
-                if now_present != behringer_present:
-                    behringer_present = now_present
+                if now_present != controller.rx_extra_sources_active:
                     log.info(f"Behringer second mic {'connected' if now_present else 'disconnected'}")
                     await _full_reconnect()
 
@@ -151,12 +202,11 @@ async def _interface_monitor():
                 log.info("Audio interface change detected while codec active — stopping pipeline")
                 controller.stop(loop)
             interface = _make_interface(config)
-            controller = PipelineController(config, interface)
+            controller = PipelineController(config, interface, on_device_error=_on_device_error)
             mode = "GoXLR" if goxlr_now else "Behringer"
             await global_state.update_metrics({"audio_interface": mode})
             await _sync_goxlr_state(interface)
             log.info(f"Audio interface switched to {mode}")
-            behringer_present = GoXLRInterface.behringer_available() if goxlr_now else False
             if isinstance(interface, GoXLRInterface):
                 pfl_task = asyncio.create_task(interface.monitor_pfl())
     finally:
@@ -167,7 +217,7 @@ async def _interface_monitor():
 async def lifespan(app: FastAPI):
     global controller, interface
     interface = _make_interface(config)
-    controller = PipelineController(config, interface)
+    controller = PipelineController(config, interface, on_device_error=_on_device_error)
     mode = "GoXLR" if isinstance(interface, GoXLRInterface) else "Behringer"
     await global_state.update_metrics({"audio_interface": mode})
     await _sync_goxlr_state(interface)
@@ -210,7 +260,8 @@ async def connect_codec(body: ConnectRequest = ConnectRequest()):
         config["audio_network"]["target_ip"] = body.target_ip
     snapshot = await global_state.get_snapshot()
     saved_mode = snapshot.get("rx_channel_mode", "stereo")
-    controller = PipelineController(config, interface, rx_channel_mode=saved_mode)
+    controller = PipelineController(config, interface, rx_channel_mode=saved_mode,
+                                     on_device_error=_on_device_error)
     controller.start(loop)
     return {"status": "success", "message": "Pipeline active"}
 

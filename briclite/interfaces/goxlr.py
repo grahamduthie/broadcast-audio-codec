@@ -209,13 +209,16 @@ class GoXLRInterface(AudioInterface):
             "audio/x-raw,rate=48000,channels=2"
         )
 
+    def rx_sample_rate(self) -> int:
+        return 48000
+
     def rx_sink_bin(self) -> str:
         if _IS_MACOS:
             # Simple stereo output when no GoXLR (capture_channels <= 2)
             if not self._mac_rx_device or self._capture_channels <= 2:
                 uid = f'unique-id="{self._mac_rx_device}" ' if self._mac_rx_device else ''
                 return (
-                    f'audioresample ! audioconvert ! volume name=rx_vol volume=1.0 ! '
+                    f'audioconvert ! volume name=rx_vol volume=1.0 ! '
                     f'osxaudiosink {uid}sync=false '
                     f'buffer-time={ALSA_BUFFER_TIME_US} latency-time={ALSA_LATENCY_TIME_US}'
                 )
@@ -226,7 +229,6 @@ class GoXLRInterface(AudioInterface):
             # -source path (see the ALSA/no-macOS branch below for details).
             mix = f'audiomixer name=goxlr_mix {_GOXLR_MIX_PROPS} ! ' if self._mac_behringer_device else ''
             return (
-                f'audioresample ! audio/x-raw,rate=48000,channels=2 ! '
                 f'audiomixmatrix in-channels=2 out-channels=10 matrix="{_RX_MATRIX}" ! '
                 f'{mix}'
                 f'audioconvert ! audio/x-raw,format=S32LE ! '
@@ -242,7 +244,6 @@ class GoXLRInterface(AudioInterface):
         # entirely rather than relied on to gracefully pass through one pad.
         mix = f'audiomixer name=goxlr_mix {_GOXLR_MIX_PROPS} ! ' if GoXLRInterface.behringer_available() else ''
         return (
-            f'audioresample ! audio/x-raw,rate=48000,channels=2 ! '
             f'audiomixmatrix in-channels=2 out-channels=10 matrix="{_RX_MATRIX}" ! '
             f'{mix}'
             f'audioconvert ! audio/x-raw,format=S32LE ! '

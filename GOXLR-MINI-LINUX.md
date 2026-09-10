@@ -143,7 +143,7 @@ Two `audiomixmatrix` elements (one per source) each expand their 2-channel input
 1. `GoXLRInterface.rx_sink_bin()` only inserts `audiomixer` at all when `extra_rx_source_bins()` will actually return something (both key off the same `GoXLRInterface.behringer_available()` check, so they always agree) — with the Behringer absent, the pipeline goes straight from the RX matrix to `alsasink`, no aggregator in the path at all.
 2. When the Behringer *is* present, the mixer gets an explicit latency budget instead of relying on the broken auto-negotiation: `audiomixer name=goxlr_mix ignore-inactive-pads=true min-upstream-latency=200000000 latency=200000000` (200ms, matching the jitter buffer). See `_GOXLR_MIX_PROPS` in `goxlr.py`.
 
-Verified live on the PSA300 with the Behringer both absent and present after this fix — echo and stretching gone in both cases. A separate, smaller residual issue (a ~once-a-minute brief dropout, present even with this fixed) is tracked in `ARCHITECTURE.md` §10/§12 as clock-drift correction — the next planned fix.
+Verified live on the PSA300 with the Behringer both absent and present after this fix — echo and stretching gone in both cases. A separate residual glitch persisted and has since been isolated to native ALSA/USB GoXLR playback, not clock drift or the application. See `CURRENT-STATUS.md` and the section below.
 
 **Codec RX matrix** (2-in → 10-out, rows = output ch, cols = RX L/R):
 ```
@@ -404,6 +404,8 @@ Implementation: `monitor_pfl()` subscribes to `ws://localhost:14564/api/websocke
 6. Restore mute buttons to `All` via `SetFaderMuteFunction`
 7. Apply cyan gradient lighting (faders + Bleep button) via `SetFaderColours` / `SetButtonColours`
 
+**Config source of truth (discovered 2026-09-09):** none of this comes from a saved `.goxlr` profile — it's asserted in code and reapplied idempotently every time `start()` runs. `start()` is called by `PipelineController.start()` (`core/pipeline_manager.py:196`), which only runs on an actual connect: `POST /api/connect`, `_full_reconnect()` (RX channel-mode switch, Behringer hotplug), or the RX watchdog's auto-reconnect — **never** merely by `briclite.service`/the host starting. `main.py`'s `lifespan()` only constructs the `PipelineController`; it does not start it. So right after a boot or `systemctl restart`, before any connect has happened, the physical GoXLR reflects whatever the `goxlr-utility` daemon's on-disk profile last held — on the PSA300 this is a profile literally named `Default`, confirmed unchanged since 1 Jun on every boot, with a different fader mapping (A=Mic, B=Music, C=Chat, D=System) and Music volume 0. That's expected pre-`start()` state, not a bug — don't try to fix an unexpected fader layout/colours by loading a different saved profile file; just call `POST /api/connect` (or trigger any reconnect) and the correct layout above is reasserted from code. Inspect live state with `goxlr-client --status-json` (shows `fader_status`, `router`, and `levels.volumes` for the running mixer).
+
 ### `tx_source_bin()`
 ```python
 return "alsasrc device=goxlr_broadcast ! audioconvert ! audio/x-raw,rate=48000,channels=2"
@@ -471,7 +473,15 @@ When applying a routing matrix, **omit `ChatMic` from all rows** to avoid these 
 
 This was a genuine hardware/wiring issue, not a code bug — but it directly caused the audiomixer instability in §5 to manifest far more severely when combined with the Behringer's second-mic branch (the flaky capture source was one of the aggregator's two input pads). Even after the audiomixer latency fix, keep the GoXLR isolated from mixed-speed devices as a matter of course on any new deployment.
 
-## 13. Useful References
+## 13. Residual Native-ALSA Playback Glitch
+
+**Investigated live 2026-09-09.** Occasional brief glitches/repeats persist in GoXLR playback even after removing the Behringer, `audiomixer`, `audiorate`, redundant sample-rate conversion, GStreamer, Python, AAC, and RTP. A native `aplay` tone to `hw:GoXLRMini,0` reproduces the fault while ALSA's 400 ms buffer remains nearly full and neither ALSA nor the kernel reports an xrun/USB error.
+
+The GoXLR exposes asynchronous 10-channel playback on endpoint `0x08` with implicit feedback from its 21-channel capture endpoint `0x88`. This matches upstream [kernel bug 211211](https://bugzilla.kernel.org/show_bug.cgi?id=211211) and [alsa-lib issue 113](https://github.com/alsa-project/alsa-lib/issues/113): GoXLR output stutters under direct ALSA while capture stays clean, with implicit-feedback handling identified as the relevant kernel area.
+
+`goxlr-daemon` is an aggravating factor, not the sole cause. On kernel `6.8.0-124`, daemon-enabled tone produced several glitches in about a minute; daemon-off tests produced one glitch in about seven minutes followed by a clean four-minute interval. The PSA300 now runs installed kernel `6.8.0-139`; repeat the identical daemon-enabled native-tone test before changing application code. Exact commands, timestamps, and live state are in `CURRENT-STATUS.md`.
+
+## 14. Useful References
 
 | Resource | URL |
 |---|---|

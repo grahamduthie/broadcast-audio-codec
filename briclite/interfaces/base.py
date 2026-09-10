@@ -11,6 +11,10 @@ ALSA_LATENCY_TIME_US = 20000    # 20ms
 
 class AudioInterface(ABC):
 
+    def rx_sample_rate(self) -> int:
+        """Native sample rate expected by rx_sink_bin()."""
+        return 44100
+
     @abstractmethod
     def tx_source_bin(self) -> str:
         """GStreamer bin description for TX capture. Must produce audio/x-raw,rate=44100,channels=2."""

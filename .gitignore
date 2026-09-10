@@ -9,4 +9,7 @@ build/
 .pytest_cache/
 .coverage
 *.log
+*.log.[0-9]*
 briclite/config.json
+.firecrawl/
+home/
