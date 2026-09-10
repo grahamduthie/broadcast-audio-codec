@@ -10,7 +10,7 @@
     "tx_port": 5004,
     "rx_port": 5004,
     "buffer_ms": 200,
-    "alsa_device": "hw:0,0"
+    "alsa_device": "hw:CODEC,0"
   },
   "expansion_future": {
     "hardware_display_enabled": false,

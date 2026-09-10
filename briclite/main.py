@@ -62,9 +62,9 @@ _full_reconnect_lock = asyncio.Lock()
 
 # Settle time given to a device (e.g. a Behringer that just underwent a USB
 # reset) to finish re-enumerating before we try to reopen its ALSA handle.
-_DEVICE_ERROR_SETTLE_S = 1.5
-_device_error_lock = asyncio.Lock()
-_device_error_retry_pending = False
+_PIPELINE_FAULT_SETTLE_S = 1.5
+_pipeline_fault_lock = asyncio.Lock()
+_pipeline_fault_retry_pending = False
 
 
 async def _full_reconnect(rx_channel_mode: Optional[str] = None) -> None:
@@ -87,43 +87,49 @@ async def _full_reconnect(rx_channel_mode: Optional[str] = None) -> None:
         controller.stop(loop)
         await asyncio.sleep(0.3)
         controller = PipelineController(config, interface, rx_channel_mode=mode,
-                                         on_device_error=_on_device_error)
+                                         on_pipeline_fault=_on_pipeline_fault)
         controller.start(loop)
 
 
-async def _on_device_error() -> None:
-    """Called by a PipelineController when a GST bus error indicates the
-    underlying ALSA device (e.g. the Behringer) reset or dropped out from
-    under it — see pipeline_manager._DEVICE_ERROR_PATTERNS.
+async def _on_pipeline_fault() -> None:
+    """Called by a PipelineController on either of two distinct failure
+    signatures that both need the same fix (tear down and rebuild every ALSA
+    handle):
 
-    A USB reset here leaves the ALSA card entry in place (so the presence
-    poll in _interface_monitor sees no change) while the open PCM handle
-    becomes permanently unusable and the element that held it spins forever
-    re-issuing the same failing ioctl — this is what flooded the journal
-    overnight on 2026-09-10 (see TROUBLESHOOTING.md "Behringer USB resets").
-    A full reconnect closes and reopens every ALSA handle, which both clears
-    the spin and picks the device back up once its reset has settled.
+    1. A GST bus error indicating the underlying ALSA device (e.g. the
+       Behringer) reset or dropped out from under it — see
+       pipeline_manager._DEVICE_ERROR_PATTERNS. A USB reset here leaves the
+       ALSA card entry in place (so the presence poll in _interface_monitor
+       sees no change) while the open PCM handle becomes permanently
+       unusable and the element that held it spins forever re-issuing the
+       same failing ioctl — this is what flooded the journal overnight on
+       2026-09-10 (see TROUBLESHOOTING.md "Behringer USB resets").
+    2. The RX stall watchdog (pipeline_manager._rx_stall_watchdog) noticing
+       the hardware sink went quiet while RX packets kept arriving, with no
+       bus message at all — e.g. GStreamer's audiomixer silently wedging.
+       See TROUBLESHOOTING.md "PFL stutters and goes silent ~90s after
+       Bleep" (found 2026-09-10, self-recovered in ~90s before this existed).
 
-    If another error arrives while a reconnect triggered by this function is
+    If another fault arrives while a reconnect triggered by this function is
     already running, it's coalesced into a single follow-up retry rather than
     stacking overlapping reconnects or being silently dropped.
     """
-    global _device_error_retry_pending
+    global _pipeline_fault_retry_pending
     log = logging.getLogger("watchdog")
-    if _device_error_lock.locked():
-        _device_error_retry_pending = True
-        log.warning("Device-error reconnect already in progress — will retry once more when it finishes")
+    if _pipeline_fault_lock.locked():
+        _pipeline_fault_retry_pending = True
+        log.warning("Pipeline-fault reconnect already in progress — will retry once more when it finishes")
         return
-    async with _device_error_lock:
+    async with _pipeline_fault_lock:
         while True:
-            log.warning(f"Device-level pipeline error — reconnecting in {_DEVICE_ERROR_SETTLE_S}s")
-            await asyncio.sleep(_DEVICE_ERROR_SETTLE_S)
+            log.warning(f"Pipeline fault — reconnecting in {_PIPELINE_FAULT_SETTLE_S}s")
+            await asyncio.sleep(_PIPELINE_FAULT_SETTLE_S)
             await _full_reconnect()
             await _sync_goxlr_state(interface)
-            log.info("Automatic reconnect after device error complete")
-            if not _device_error_retry_pending:
+            log.info("Automatic reconnect after pipeline fault complete")
+            if not _pipeline_fault_retry_pending:
                 break
-            _device_error_retry_pending = False
+            _pipeline_fault_retry_pending = False
 
 
 async def _rx_watchdog():
@@ -133,8 +139,18 @@ async def _rx_watchdog():
     has happened other than noticing that the Comrex has stopped sending back.
     A new PipelineController produces a new random SSRC, which makes the Comrex
     treat the resumed stream as a fresh incoming call and re-establish.
+
+    Goes through _full_reconnect() (properly serialised via _full_reconnect_lock)
+    rather than rebuilding the pipeline inline. Until 2026-09-10 this function
+    and _interface_monitor's hotswap path each mutated the shared global
+    `controller` directly with no locking at all — only _full_reconnect() was
+    protected. Under rapid concurrent triggers (confirmed live: a USB port
+    swap firing the device-error path, the stall watchdog, and an interface
+    hotswap within the same few seconds) they raced on that global, and this
+    watchdog's own loop silently stopped detecting further outages — a real
+    RX outage then went undetected for 100+ seconds with no automatic
+    recovery until a human intervened. See TROUBLESHOOTING.md.
     """
-    global controller
     log = logging.getLogger("watchdog")
     while True:
         await asyncio.sleep(3.0)
@@ -143,13 +159,7 @@ async def _rx_watchdog():
         elapsed = time.monotonic() - controller.last_rx_packet
         if elapsed > _RX_WATCHDOG_S:
             log.warning(f"No RX packets for {elapsed:.1f}s — auto-reconnecting")
-            loop = asyncio.get_event_loop()
-            mode = controller.rx_channel_mode
-            controller.stop(loop)
-            await asyncio.sleep(1.0)
-            controller = PipelineController(config, interface, rx_channel_mode=mode,
-                                             on_device_error=_on_device_error)
-            controller.start(loop)
+            await _full_reconnect(controller.rx_channel_mode)
             await _sync_goxlr_state(interface)
             log.info("Auto-reconnect complete")
 
@@ -166,7 +176,7 @@ async def _interface_monitor():
     Compares live presence against controller.rx_extra_sources_active (what
     the *running* pipeline actually has) rather than a separately-tracked
     last-seen value here. A rebuild triggered by something else — notably
-    on_device_error's auto-reconnect, which can land while the Behringer is
+    on_pipeline_fault's auto-reconnect, which can land while the Behringer is
     mid-reset and rebuild without it — would otherwise leave a locally
     remembered flag stale and the Behringer branch silently missing from the
     mix from then on, even after the device comes back. Confirmed 2026-09-10
@@ -197,12 +207,8 @@ async def _interface_monitor():
                 continue
             await _cancel_task(pfl_task)
             pfl_task = None
-            loop = asyncio.get_event_loop()
-            if controller.is_active:
-                log.info("Audio interface change detected while codec active — stopping pipeline")
-                controller.stop(loop)
             interface = _make_interface(config)
-            controller = PipelineController(config, interface, on_device_error=_on_device_error)
+            await _full_reconnect()
             mode = "GoXLR" if goxlr_now else "Behringer"
             await global_state.update_metrics({"audio_interface": mode})
             await _sync_goxlr_state(interface)
@@ -217,7 +223,7 @@ async def _interface_monitor():
 async def lifespan(app: FastAPI):
     global controller, interface
     interface = _make_interface(config)
-    controller = PipelineController(config, interface, on_device_error=_on_device_error)
+    controller = PipelineController(config, interface, on_pipeline_fault=_on_pipeline_fault)
     mode = "GoXLR" if isinstance(interface, GoXLRInterface) else "Behringer"
     await global_state.update_metrics({"audio_interface": mode})
     await _sync_goxlr_state(interface)
@@ -261,7 +267,7 @@ async def connect_codec(body: ConnectRequest = ConnectRequest()):
     snapshot = await global_state.get_snapshot()
     saved_mode = snapshot.get("rx_channel_mode", "stereo")
     controller = PipelineController(config, interface, rx_channel_mode=saved_mode,
-                                     on_device_error=_on_device_error)
+                                     on_pipeline_fault=_on_pipeline_fault)
     controller.start(loop)
     return {"status": "success", "message": "Pipeline active"}
 

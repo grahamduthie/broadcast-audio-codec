@@ -1,12 +1,14 @@
 import gi
 import threading
 import asyncio
+import fcntl
 import logging
 import os
 import socket
 import struct
 import sys
 import random
+import termios
 import time
 
 gi.require_version("Gst", "1.0")
@@ -45,6 +47,33 @@ _PLAYOUT_RT_PRIORITY = 10       # SCHED_FIFO priority for the playout thread (Li
 # thousands of log lines over several hours) because nothing ever tears the
 # pipeline down. See TROUBLESHOOTING.md "Behringer USB resets".
 _DEVICE_ERROR_PATTERNS = ("disconnected", "no such device", "input/output error")
+
+# How long the RX hardware sink can go with no buffer reaching it, while RX
+# network packets keep arriving, before we treat it as a silent stall rather
+# than ordinary studio silence (silence is still encoded/transmitted as AAC
+# frames at the normal ~42ms cadence, so a healthy pipeline never actually
+# goes this long between buffers regardless of how quiet the source is).
+# Distinct from _rx_watchdog's 10s threshold in main.py, which detects the
+# *network* going quiet — this detects local playout going quiet while the
+# network stays healthy, e.g. GStreamer's audiomixer/aggregator silently
+# wedging (no error posted to the bus — see goxlr.py's rx_sink_bin() comment,
+# and TROUBLESHOOTING.md "PFL stutters and goes silent ~90s after Bleep").
+_RX_SINK_STALL_S    = 2.5
+_STALL_CHECK_INTERVAL_S = 1.0
+
+# Diagnostic instrumentation added 2026-09-10 to chase the "PFL stutters and
+# goes silent" symptom (TROUBLESHOOTING.md) — logs any gap over this length
+# on the RX socket read loop, the RX hardware sink, and the TX capture
+# stream, whenever one occurs, well below the 2.5s/10s watchdog thresholds
+# above so we get the full timeline rather than just "it's been broken a
+# while." _rx_loop additionally logs the RTP sequence delta across the gap:
+# a delta of ~1 despite a multi-second real-time gap means the packets were
+# sitting in the OS socket buffer the whole time and _rx_loop's thread just
+# wasn't scheduled to read them (a local stall) — a delta matching the
+# gap's real-time duration at the stream's ~23.4 pkt/s rate means they
+# genuinely weren't sent/received (a real network gap).
+_GAP_LOG_THRESHOLD_S = 0.3
+_RTP_PACKET_RATE     = _AAC_SAMP / _AAC_FRAME   # ~23.4375 pkt/s
 
 
 def _seq_after(a: int, b: int) -> bool:
@@ -124,7 +153,7 @@ class JitterBuffer:
 class PipelineController:
 
     def __init__(self, config: dict, interface: AudioInterface, rx_channel_mode: str = "stereo",
-                 on_device_error=None):
+                 on_pipeline_fault=None):
         Gst.init(None)
         net = config["audio_network"]
         self.interface  = interface
@@ -133,10 +162,21 @@ class PipelineController:
         self.rx_port    = net["rx_port"]
         self.latency_ms = net.get("buffer_ms", 200)
 
-        # Coroutine (no args) scheduled on self.event_loop the first time a
-        # device-loss error hits the bus — see _DEVICE_ERROR_PATTERNS.
-        self.on_device_error      = on_device_error
+        # Coroutine (no args) scheduled on self.event_loop the first time
+        # either (a) a device-loss error hits the bus (_DEVICE_ERROR_PATTERNS)
+        # or (b) the RX stall watchdog notices the hardware sink went quiet
+        # while RX packets kept arriving (_RX_SINK_STALL_S) — two distinct
+        # failure signatures needing the same fix: tear down and rebuild
+        # every ALSA handle. (b) exists because GStreamer's audiomixer can
+        # wedge with *no* bus error at all — see goxlr.py's rx_sink_bin().
+        self.on_pipeline_fault    = on_pipeline_fault
         self._device_error_seen   = False
+        self._stall_reported      = False
+        self._last_rx_sink_buffer = time.monotonic()
+        # Diagnostic-only, separate from the above: None until the first
+        # buffer after a (re)build actually arrives, so build/startup latency
+        # itself never gets logged as a false "gap" — see _on_rx_sink_buffer.
+        self._last_rx_sink_buffer_seen = None
 
         self.event_loop = None
         self.is_active  = False
@@ -154,13 +194,14 @@ class PipelineController:
         self.sock        = None
         self.glib_loop   = GLib.MainLoop()
         self.last_rx_packet = 0.0
+        self._last_tx_sample = 0.0
 
         # Ground truth for "does the currently-built RX pipeline actually
         # include an extra source (e.g. the Behringer)?" — set on every
         # (re)build, from whichever code path triggered it. main.py's
         # _interface_monitor compares this against live presence instead of
         # tracking its own separate "last seen" flag, so a rebuild triggered
-        # by something else (e.g. on_device_error) can't leave the monitor's
+        # by something else (e.g. on_pipeline_fault) can't leave the monitor's
         # bookkeeping stale and the branch silently missing thereafter.
         self.rx_extra_sources_active = False
 
@@ -189,7 +230,33 @@ class PipelineController:
         bus = pipeline.get_bus()
         bus.add_signal_watch()
         bus.connect("message", self._on_bus_message)
+        self._last_rx_sink_buffer = time.monotonic()
+        self._last_rx_sink_buffer_seen = None
+        self._stall_reported = False
+        self._attach_rx_stall_probe(pipeline)
         return pipeline, appsrc
+
+    def _attach_rx_stall_probe(self, pipeline):
+        """Timestamp every buffer that actually reaches the RX pipeline's
+        hardware sink(s) — interface-agnostic via iterate_sinks(), so this
+        works whether rx_sink_bin() ends in alsasink, osxaudiosink, etc.
+        _rx_stall_watchdog compares this against last_rx_packet to catch a
+        silent output stall (e.g. audiomixer wedging) that RX network health
+        alone wouldn't reveal."""
+        for sink in pipeline.iterate_sinks():
+            pad = sink.get_static_pad("sink")
+            if pad:
+                pad.add_probe(Gst.PadProbeType.BUFFER, self._on_rx_sink_buffer)
+
+    def _on_rx_sink_buffer(self, pad, info):
+        now = time.monotonic()
+        if self._last_rx_sink_buffer_seen is not None:
+            gap = now - self._last_rx_sink_buffer_seen
+            if gap > _GAP_LOG_THRESHOLD_S:
+                logger.warning(f"RX sink buffer gap: {gap*1000:.0f}ms since previous buffer reached hardware")
+        self._last_rx_sink_buffer_seen = now
+        self._last_rx_sink_buffer = now
+        return Gst.PadProbeReturn.OK
 
     def _build_pipelines(self):
         tx_str = (
@@ -221,6 +288,9 @@ class PipelineController:
 
         self.interface.start()
         self.last_rx_packet = time.monotonic()
+        self._last_rx_sink_buffer = time.monotonic()
+        self._last_rx_sink_buffer_seen = None
+        self._last_tx_sample = 0.0
         self.tx_pipeline.set_state(Gst.State.PLAYING)
         self.rx_pipeline.set_state(Gst.State.PLAYING)
         self.is_active = True
@@ -234,6 +304,7 @@ class PipelineController:
             event_loop
         )
         asyncio.run_coroutine_threadsafe(self._poll_stats_loop(), event_loop)
+        asyncio.run_coroutine_threadsafe(self._rx_stall_watchdog(), event_loop)
         logger.info(
             f"Started (jitter buf {self.latency_ms} ms): "
             f"TX→{self.target_ip}:{self.tx_port}  RX←:{self.rx_port}"
@@ -303,6 +374,12 @@ class PipelineController:
         sample = appsink.emit("pull-sample")
         if not sample:
             return Gst.FlowReturn.OK
+        now = time.monotonic()
+        if self._last_tx_sample:
+            gap = now - self._last_tx_sample
+            if gap > _GAP_LOG_THRESHOLD_S:
+                logger.warning(f"TX capture gap: {gap*1000:.0f}ms since previous sample")
+        self._last_tx_sample = now
         buf  = sample.get_buffer()
         data = buf.extract_dup(0, buf.get_size())
 
@@ -323,6 +400,8 @@ class PipelineController:
         return Gst.FlowReturn.OK
 
     def _rx_loop(self):
+        last_seq = None
+        last_arrival = None
         while self.is_active:
             try:
                 data, _ = self.sock.recvfrom(65535)
@@ -330,6 +409,7 @@ class PipelineController:
                 continue
             except Exception:
                 break
+            recv_time = time.monotonic()
 
             if len(data) < 12:
                 continue
@@ -352,8 +432,27 @@ class PipelineController:
             if len(payload) < 2 or payload[0] != 0xFF or (payload[1] & 0xF0) != 0xF0:
                 continue
 
+            if last_arrival is not None:
+                gap = recv_time - last_arrival
+                if gap > _GAP_LOG_THRESHOLD_S:
+                    seq_delta = (seq - last_seq) % _WRAP
+                    expected_if_real_loss = round(gap * _RTP_PACKET_RATE)
+                    verdict = ("local read delay — packets were queued, not lost"
+                               if seq_delta <= 1 else
+                               "real network gap — sequence numbers actually skipped"
+                               if abs(seq_delta - expected_if_real_loss) <= max(2, expected_if_real_loss * 0.2) else
+                               "unclear — delta doesn't cleanly match either case")
+                    logger.warning(
+                        f"RX socket gap: {gap*1000:.0f}ms since previous packet "
+                        f"(seq {last_seq}→{seq}, delta {seq_delta}, "
+                        f"~{expected_if_real_loss} expected if genuinely lost at "
+                        f"{_RTP_PACKET_RATE:.1f} pkt/s) — {verdict}"
+                    )
+            last_seq = seq
+            last_arrival = recv_time
+
             self.jitter_buf.push(seq, rtp_ts, bytes(payload))
-            self.last_rx_packet = time.monotonic()
+            self.last_rx_packet = recv_time
 
     def _playout_loop(self):
         # Best-effort: protect this thread from being descheduled by system
@@ -401,14 +500,14 @@ class PipelineController:
         if t == Gst.MessageType.ERROR:
             err, dbg = message.parse_error()
             logger.error(f"GST ERROR: {err} | {dbg}")
-            if (self.is_active and self.on_device_error and not self._device_error_seen
+            if (self.is_active and self.on_pipeline_fault and not self._device_error_seen
                     and any(p in str(err).lower() for p in _DEVICE_ERROR_PATTERNS)):
                 self._device_error_seen = True
                 logger.warning(
                     "Device-level GST error — the underlying ALSA device likely "
                     "reset/dropped; triggering automatic reconnect"
                 )
-                asyncio.run_coroutine_threadsafe(self.on_device_error(), self.event_loop)
+                asyncio.run_coroutine_threadsafe(self.on_pipeline_fault(), self.event_loop)
         elif t == Gst.MessageType.WARNING:
             w, dbg = message.parse_warning()
             logger.warning(f"GST WARN: {w}")
@@ -440,3 +539,57 @@ class PipelineController:
                 "lost":   self.jitter_buf.packets_lost,
                 "late":   self.jitter_buf.packets_late,
             })
+
+    def _socket_recv_queue_bytes(self) -> int:
+        """Bytes currently sitting unread in the RX UDP socket's kernel
+        receive buffer (FIONREAD) — read-only, doesn't consume anything.
+        Diagnostic added 2026-09-10: distinguishes "packets are arriving at
+        the kernel but _rx_loop's thread isn't being scheduled to read them"
+        (queue depth > 0 and growing) from "nothing is actually arriving,
+        the gap is upstream of this host" (queue stays at 0) — the per-packet
+        gap logger in _rx_loop can't observe this because main.py's 10s
+        _rx_watchdog tears the socket down (discarding anything queued on it)
+        before a "next" packet ever arrives to measure the resumption
+        against. Returns -1 if the ioctl fails (e.g. socket already closed)."""
+        try:
+            return struct.unpack("I", fcntl.ioctl(self.sock.fileno(), termios.FIONREAD, b"\0\0\0\0"))[0]
+        except OSError:
+            return -1
+
+    async def _rx_stall_watchdog(self):
+        """Catch the RX hardware sink going silently quiet while RX network
+        packets keep arriving — a failure GStreamer doesn't post any bus
+        message for (see _attach_rx_stall_probe/_on_rx_sink_buffer and
+        _RX_SINK_STALL_S above). Requires RX to be recently healthy so this
+        doesn't fire redundantly with main.py's _rx_watchdog, which already
+        handles the network itself going quiet.
+
+        Also logs the RX socket's kernel receive-queue depth whenever RX has
+        been idle beyond _GAP_LOG_THRESHOLD_S, regardless of which watchdog
+        ends up handling it — see _socket_recv_queue_bytes."""
+        while self.is_active:
+            await asyncio.sleep(_STALL_CHECK_INTERVAL_S)
+            if not self.is_active:
+                break
+            now = time.monotonic()
+            rx_idle_s = now - self.last_rx_packet
+            if rx_idle_s > _GAP_LOG_THRESHOLD_S:
+                queued = self._socket_recv_queue_bytes()
+                verdict = ("data IS waiting in the kernel buffer — _rx_loop's thread "
+                           "isn't reading it (local stall)" if queued > 0 else
+                           "nothing queued — genuinely no packets have arrived at this host")
+                logger.warning(
+                    f"RX socket idle {rx_idle_s*1000:.0f}ms, {queued} bytes queued unread — {verdict}"
+                )
+            rx_network_recent = rx_idle_s < _RX_SINK_STALL_S
+            sink_stalled = (now - self._last_rx_sink_buffer) > _RX_SINK_STALL_S
+            if (rx_network_recent and sink_stalled
+                    and self.on_pipeline_fault and not self._stall_reported):
+                self._stall_reported = True
+                logger.warning(
+                    f"RX sink produced no output for over {_RX_SINK_STALL_S}s while RX "
+                    f"packets keep arriving — local playout stall (e.g. audiomixer wedged, "
+                    f"see TROUBLESHOOTING.md 'PFL stutters and goes silent'); "
+                    f"triggering automatic reconnect"
+                )
+                asyncio.run_coroutine_threadsafe(self.on_pipeline_fault(), self.event_loop)

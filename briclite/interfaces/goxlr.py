@@ -5,6 +5,7 @@ import socket
 import struct
 import json
 import logging
+import time
 
 import websockets
 
@@ -13,6 +14,7 @@ from .base import ALSA_BUFFER_TIME_US, ALSA_LATENCY_TIME_US, AudioInterface
 _IS_MACOS = sys.platform == "darwin"
 
 logger = logging.getLogger("goxlr")
+ipc_logger = logging.getLogger("goxlr.ipc")
 
 _SOCKET_PATH = "/tmp/goxlr.socket"
 _WEBSOCKET_URL = "ws://localhost:14564/api/websocket"
@@ -171,11 +173,23 @@ class GoXLRInterface(AudioInterface):
         return json.loads(GoXLRInterface._recv_exact(sock, length))
 
     def _ipc(self, payload: dict) -> object:
+        label = next(iter(payload))
+        if label == "Command" and isinstance(payload["Command"], list) and len(payload["Command"]) == 2:
+            label = f"Command:{next(iter(payload['Command'][1]))}"
+        t0 = time.monotonic()
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.settimeout(5.0)
         sock.connect(_SOCKET_PATH)
         result = self._query(sock, payload)
         sock.close()
+        dt_ms = (time.monotonic() - t0) * 1000
+        # Diagnostic instrumentation added 2026-09-10 to chase "PFL stutters
+        # and goes silent" (TROUBLESHOOTING.md) — Bleep triggers a burst of
+        # these over the *same* USB device that's carrying the live audio
+        # streams; logging every call's duration lets us correlate a slow
+        # one against exactly when RX/TX gaps start in pipeline_manager.py's
+        # matching instrumentation.
+        ipc_logger.info(f"{label} took {dt_ms:.0f}ms")
         return result
 
     def _cmd(self, command: dict) -> None:
@@ -404,7 +418,16 @@ class GoXLRInterface(AudioInterface):
             if "/button_down/Bleep" not in path or patch.get("value") is not True:
                 continue
             self._studio_pfl = not self._studio_pfl
+            t0 = time.monotonic()
+            logger.info(
+                f"Bleep pressed — PFL {'engaging' if self._studio_pfl else 'releasing'}, "
+                f"starting GoXLR IPC burst"
+            )
             await asyncio.to_thread(self._apply_studio_pfl_volume)
             await asyncio.to_thread(self._apply_headphone_routing)
             await asyncio.to_thread(self._set_bleep_colour)
-            logger.info(f"Studio return PFL {'active' if self._studio_pfl else 'off'}")
+            dt_ms = (time.monotonic() - t0) * 1000
+            logger.info(
+                f"Studio return PFL {'active' if self._studio_pfl else 'off'} "
+                f"(IPC burst took {dt_ms:.0f}ms total)"
+            )

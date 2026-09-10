@@ -290,6 +290,7 @@ Ensures immediate startup without waiting for PREROLL state. Important for live 
 - Jitter buffer uses `threading.Lock` for thread-safe access
 - GStreamer state updates go through `asyncio.run_coroutine_threadsafe()`
 - No shared mutable state except through locks/async primitives
+- **The global `controller` (the active `PipelineController`) is only ever rebuilt through `main.py`'s `_full_reconnect()`, serialised behind `_full_reconnect_lock`.** This wasn't true until 2026-09-10: `_rx_watchdog()` and `_interface_monitor()`'s auto-mode hot-swap path used to duplicate the stop/construct/start sequence inline, unlocked. Under concurrent triggers (a device error, a stall, and an interface hot-swap landing within the same few seconds) they raced on the shared global and silently disabled the RX watchdog's outage detection for 100+ seconds. Both now call `_full_reconnect()` instead — see `TROUBLESHOOTING.md` "RX network watchdog silently stops detecting outages" and `USB-AUDIO-GLITCH.md` for the full incident. Any new code path that needs to rebuild the pipeline should go through `_full_reconnect()`, never construct/start a `PipelineController` directly against the shared global.
 
 ---
 

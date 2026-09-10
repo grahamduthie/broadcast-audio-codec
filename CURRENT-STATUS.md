@@ -1,6 +1,6 @@
-# Current Investigation Status — 2026-09-09
+# Current Investigation Status — updated 2026-09-10
 
-This is the handoff document for the live residual RX-audio glitch investigation. Read this before resuming tests on the PSA300.
+This is the handoff document for the live residual RX-audio glitch investigation, started 2026-09-09. Read this before resuming tests on the PSA300 — start with the most recent dated section below and work backward; older sections are historical record. For the full technical deep-dive specifically on the USB/audio glitch (not the overnight-flood or bug-fixing threads), see `USB-AUDIO-GLITCH.md`.
 
 ## Update — 2026-09-10 morning: overnight unattended run + Behringer USB-reset log flood, now fixed
 
@@ -16,9 +16,48 @@ Root cause of the resets themselves: the Behringer (full-speed/12Mbps) now share
 - Journal vacuumed on the PSA300 (439M → 268M) to reclaim the space the flood used; 94G free on `/`, was never actually at risk of filling overnight.
 - Deployed via the documented one-shot restart+reconnect round-trip (`TROUBLESHOOTING.md` "deploying a code change causes an extended outage") — confirmed clean restart, immediate reconnect, no cascade.
 
-**Not yet done:** physically moving the Behringer off the hub it shares with the mouse/keyboard (would need hands-on access to the PSA300). The software fix means this no longer matters operationally (a reset now self-heals in ~2s instead of silently degrading for hours), but doing it would reduce how often resets happen at all.
+**Update, later 2026-09-10:** both of the above were done later the same day — see the next section. Physically moving the Behringer off the HID hub: done (mouse/keyboard removed entirely, Behringer now direct). Validation: done, twice, via deliberate deauthorize/reauthorize of the Behringer's USB device — confirmed clean single-reconnect recovery, no flood.
 
-**Not yet validated:** the new auto-reconnect code path hasn't been exercised against a real reset since deploying (none has occurred yet). Trigger one deliberately (e.g. `sudo usbctl` unbind/rebind or unplug/replug the Behringer) and confirm via `journalctl -u briclite -f` that exactly one `"Device-level GST error"` + reconnect appears, not a flood, before considering this closed.
+## Update — 2026-09-10 later morning: PFL stutter investigation — three real bugs found and fixed, core glitch still open
+
+Full technical detail, evidence, and upstream references for everything in this section are in **`USB-AUDIO-GLITCH.md`** — read that file for the deep dive. This section is the session summary and current live state.
+
+### What was chased
+Graham reported PFL audio stuttering then going silent (seconds to ~90s) shortly after pressing Bleep, then reconnecting on its own — "regularly reproducible" at first. Investigation established this is **not one bug** but an umbrella over at least four distinct fault signatures, only one of which (frequent small glitches with zero log signature) remains unexplained:
+
+1. **Silent `audiomixer`/aggregator stall** — no bus error, RX/TX meters unaffected because they're upstream of the failure point. Already partially anticipated by a pre-existing code comment in `goxlr.py`. Mitigated with a new RX-hardware-sink buffer probe + `_rx_stall_watchdog()` in `pipeline_manager.py` (2.5s threshold, guarded by RX network still being recent). Not yet caught firing on a confirmed clean reproduction — every live repro that got instrumented turned out to be #2 instead.
+2. **Genuine RX network gaps** following any TX interruption (hotplug, restart) — the remote drops its own session on a TX gap and takes ~30-45s to notice and reconnect. Pre-existing, well-understood, self-heals via the existing 10s `_rx_watchdog`. Confirmed definitively via new instrumentation (RTP sequence-continuity check + `FIONREAD` socket-queue-depth probe) — every genuine capture showed 0 bytes queued throughout, i.e. real loss, not local scheduling delay.
+3. **GoXLR's own tight ALSA error loop** when the device is briefly absent (e.g. mid physical-swap) — caught by the same device-error auto-reconnect as the Behringer flood fix.
+4. **Frequent small "regular glitches"** — reported twice, live-checked both times, **zero log entries of any kind** during active glitching. This is the one still open; see `USB-AUDIO-GLITCH.md` for why it's most likely the actual upstream implicit-feedback hardware/firmware bug (kernel bugzilla #211211, alsa-lib #113) rather than anything this investigation's instrumentation can catch.
+
+### Diagnostic instrumentation added (all in `pipeline_manager.py` / `goxlr.py`)
+- RX/TX/sink buffer gap logging (`_GAP_LOG_THRESHOLD_S = 0.3s`) with RTP sequence-delta verdict distinguishing "local read delay" from "real network loss."
+- `_socket_recv_queue_bytes()` — `FIONREAD`-based kernel receive-buffer probe, polled every second whenever RX is idle; settles the local-vs-network question even when the coarser watchdog tears the socket down before a "next packet" can be measured.
+- `goxlr.py`'s `_ipc()` now times every GoXLR daemon IPC call (`goxlr.ipc` logger) — revealed the daemon's own constant ~50-100Hz background status polling (see `USB-AUDIO-GLITCH.md`), a likely bigger factor than briclite's own occasional command bursts.
+
+### usbmon caution — read before using it again
+Used twice for raw USB-bus evidence. The second attempt, run **while Graham was actively listening to PFL**, itself caused audible audio breakup worse than the glitch being investigated. Stopped immediately. Do not run `usbmon` (or any full-rate USB trace) while anyone is relying on the live audio — see `USB-AUDIO-GLITCH.md` for the likely mechanism (CPU/interrupt load perturbing the same fragile timing). The two captures taken (a 6s baseline, a 15-minute rolling capture) are still valid for what they directly decoded (the daemon's polling format/rate) but not as a clean glitch-frequency baseline.
+
+### USB topology — confirmed empirically, not just theorised
+`lsusb -v` on the PSA300's internal hub chip: `bDeviceProtocol: 1 Single TT`, 8 ports. **Both of the two physical rear ports lead into the same internal hub** — which port a device uses makes no topological difference. (This contradicts an 2026-09-09 documentation claim that the "USB3"/blue port gave the GoXLR a direct root-hub path — that claim doesn't hold up under this evidence and should be treated as superseded; see `USB-AUDIO-GLITCH.md`.) Mouse and keyboard were removed and the Behringer moved to a direct port (no external hub), leaving it as the only full/low-speed device on the shared Single-TT hub — this should reduce (not eliminate) the reset frequency behind the Behringer-flood fix's root cause, but hasn't yet been confirmed over a long unattended window. Several deliberate port swaps were done afterward purely as recovery-mechanism stress tests (see next section) — they don't change anything topologically, since both ports are equivalent.
+
+### Three real software bugs found (all unrelated to USB topology) — all fixed and deployed
+1. **Behringer fallback ALSA device misconfigured** (`hw:0,0` instead of `hw:CODEC,0`) — the automatic GoXLR→Behringer failover (auto mode) had never actually pointed at the Behringer; `hw:0,0` normally resolves to the GoXLR itself. Any GoXLR hotplug triggered a ~11s error cascade instead of a clean fallback. Fixed in both live `config.json` and `config.example.json`.
+2. **Interface hot-swap never called `.start()`** — after GoXLR reappears and `_interface_monitor` switches back to it, the pipeline was rebuilt but left in `Gst.State.NULL` forever; codec silently stayed disconnected until a manual `/api/connect`. Pre-existing bug, only exposed today because the GoXLR had never before gone genuinely absent-then-present in this investigation.
+3. **RX watchdog race condition** — `_rx_watchdog()` and the interface-hotswap path each rebuilt the shared `controller` global inline, unlocked (unlike `_full_reconnect()`, which is properly locked). Rapid concurrent triggers during a USB swap test raced on that global and silently disabled the RX watchdog's own outage detection — a real outage then persisted **100+ seconds with zero automatic recovery**, worse than anything else seen this whole investigation. Fixed by routing both paths through the same locked `_full_reconnect()`. See `ARCHITECTURE.md` §8 for the now-documented invariant.
+
+All three are written up in full in `TROUBLESHOOTING.md`.
+
+### Live state at end of session (2026-09-10, ~09:50 UTC)
+- `briclite.service` active, connected (`TX→217.36.229.106:5004 RX←:5004`), no ongoing errors.
+- USB topology: mouse/keyboard removed; GoXLR and Behringer both on the PSA300's internal Single-TT hub (which physical port each uses doesn't matter — see above). Last known arrangement before the final deliberate swap test: GoXLR on the "standard" port, Behringer on "blue" — but this was swapped multiple times during testing and may not reflect the very final physical state; verify with `lsusb -t` before relying on it.
+- Journal: `journalctl --disk-usage` flat throughout despite one flood-scale event during testing (rate limiter held).
+- Code changes from this session (pipeline_manager.py, main.py, goxlr.py, config.example.json) were uncommitted as of this write-up — check `git log`/`git status` to confirm whether they've since been committed.
+
+### Next steps for whoever picks this up
+1. **Signature #4 (frequent small glitches) is the real open problem.** See `USB-AUDIO-GLITCH.md` → "Where this leaves things" for concrete next steps (narrow, announced `usbmon` window; investigate `goxlr-daemon` poll-rate options; don't re-conflate with the other three signatures).
+2. Let the topology change (HID removed) run unattended for a while and check whether Behringer USB resets (`journalctl -k | grep 'usb 1-1'`) actually became rarer.
+3. If another concurrency bug like #3 above turns up, the fix pattern is the same: route it through `_full_reconnect()`, never touch the shared `controller` global directly.
 
 ## Bottom line
 

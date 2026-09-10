@@ -413,15 +413,89 @@ journalctl --disk-usage           # check whether a past flood already ate disk 
 ### Fix — physical (for instance 1, GoXLR/Behringer sharing a hub)
 Plug the GoXLR directly into a host USB port, bypassing any hub. Put the Behringer and any other peripherals on a separate hub/port. See `GOXLR-MINI-LINUX.md` §12 for the full writeup and the PSA300's specific two-port wiring. Verify with `lsusb -t` (GoXLR should be a direct child of the root hub) and confirm 0 "No such device" errors over a minute of `journalctl` monitoring afterward. **Already done and confirmed stable — the GoXLR has not been implicated in any reset event since.**
 
-### Fix — physical, not yet done (for instance 2, Behringer/HID sharing a hub)
-The Behringer currently shares its hub with the mouse and keyboard (`lsusb -t`, confirmed 2026-09-10: both live on `Dev 004`, the second-tier hub). Moving the Behringer to its own hub/port, away from the low-speed HID devices, is the same class of fix as instance 1 and should reduce reset frequency further — not yet applied since it requires hands-on access to the PSA300's rear panel.
+### Fix — physical (for instance 2, Behringer/HID sharing a hub)
+**Done 2026-09-10.** The mouse and keyboard were physically removed (not needed for testing) and the Behringer plugged directly into the PSA300's second port, no longer via an external hub. `lsusb -v` on the internal hub chip confirms `bDeviceProtocol: 1 Single TT` — both of the PSA300's rear ports lead into the **same** internal 8-port, single-TT hub regardless of which one is used, so which specific port each device uses makes no topological difference. What matters is that the Behringer is now the *only* full/low-speed device sharing that TT — the multi-device contention (Behringer + mouse + keyboard) this LKML bug class depends on no longer exists. Effect on long-run reset frequency not yet confirmed over an unattended window; see `USB-AUDIO-GLITCH.md` for the full topology writeup, including why an earlier documentation claim about a "USB3 port" giving the GoXLR a direct root-hub path does not hold up.
 
 ### Fix — software (automatic recovery + log safety, added 2026-09-10)
-Since the underlying USB-level resets can't be eliminated outright (see LKML thread above), `pipeline_manager.py`'s `_on_bus_message` now recognises a GST bus `ERROR` whose text matches `_DEVICE_ERROR_PATTERNS` ("disconnected", "no such device", "input/output error") as a device-loss event rather than an ordinary stream error, and calls back into `main.py`'s `_on_device_error()`, which waits `_DEVICE_ERROR_SETTLE_S` (1.5s, to let the USB reset finish) and then runs the same `_full_reconnect()` used for channel-mode switches and Behringer hotplug — closing and reopening every ALSA handle, which stops the spinning thread and clears the flood. Concurrent triggers are coalesced into a single follow-up retry rather than stacking. This closes the gap the presence-poll watchdog missed (see "Root cause" above) — a reset event is now handled within ~2 seconds instead of persisting indefinitely.
+Since the underlying USB-level resets can't be eliminated outright (see LKML thread above), `pipeline_manager.py`'s `_on_bus_message` now recognises a GST bus `ERROR` whose text matches `_DEVICE_ERROR_PATTERNS` ("disconnected", "no such device", "input/output error") as a device-loss event rather than an ordinary stream error, and calls back into `main.py`'s `_on_pipeline_fault()` (also triggered by a second, unrelated failure mode — see "PFL stutters and goes silent" below), which waits `_PIPELINE_FAULT_SETTLE_S` (1.5s, to let the USB reset finish) and then runs the same `_full_reconnect()` used for channel-mode switches and Behringer hotplug — closing and reopening every ALSA handle, which stops the spinning thread and clears the flood. Concurrent triggers are coalesced into a single follow-up retry rather than stacking. This closes the gap the presence-poll watchdog missed (see "Root cause" above) — a reset event is now handled within ~2 seconds instead of persisting indefinitely.
 
 As a disk-space backstop independent of that fix, `briclite.service` also now sets `LogRateLimitIntervalSec=30s` / `LogRateLimitBurst=1000` (see `BUILD.md` §7) — systemd's own default (10000/30s) is far too loose to catch a sustained ~20 lines/sec spin like the one observed.
 
 Verify after a reset event: `journalctl -u briclite --since "-2 min" | grep -i "Device-level GST error"` should show at most one or two reconnects, not a runaway flood, and `journalctl --disk-usage` should stay flat.
+
+## Issue: PFL audio stutters and goes silent for seconds to ~90s, then reconnects on its own
+
+### What this actually is
+This is an umbrella symptom with **at least four distinct underlying causes** — see `USB-AUDIO-GLITCH.md` for the full investigation, evidence, upstream references, and current status. Do not assume two reports of "PFL glitched" are the same bug; check the log first.
+
+### Diagnosis — do this before assuming anything
+```bash
+journalctl -u briclite --since "-3 min" | grep -viE 'SNDRV_PCM_IOCTL_DELAY|goxlr.ipc|aggregator'
+```
+Look for, in order of what you'll actually find:
+- `RX socket gap: ...ms ... delta 1 ... local read delay` — the RX-reading thread was briefly starved but no packets were lost; usually resolves in under a second on its own.
+- `RX socket idle ...ms, N bytes queued unread` with `N > 0` — same as above, a genuine local stall in progress.
+- `RX socket idle ...ms, 0 bytes queued unread — nothing queued` — a **real network gap**; nothing arrived at this host at all. Check whether it follows a TX interruption (hotplug, restart) — the remote drops its session on a TX gap and takes ~30-45s to reconnect. Self-heals via `main.py`'s `_rx_watchdog` (10s threshold).
+- `RX sink produced no output for over 2.5s while RX packets keep arriving` — the local playout stall watchdog fired (`pipeline_manager._rx_stall_watchdog`); RX network was fine, something downstream (most likely `audiomixer`/`goxlr_mix`) silently stopped producing output. Self-heals via the same `_full_reconnect()` path.
+- **Nothing logged at all**, despite audibly glitching — this is fault signature #4 in `USB-AUDIO-GLITCH.md`, the still-unresolved one. Don't spend time re-diagnosing it the same way; it's already established that it produces zero signal in current instrumentation.
+
+### Fix
+All three of the *detected* signatures above already self-heal automatically via `_full_reconnect()` — no manual action needed, typically resolved within 2-15 seconds. The undetected one (#4) has no fix yet; see `USB-AUDIO-GLITCH.md` for what's been ruled out and what to try next.
+
+### Do not do this while diagnosing
+Do not run `usbmon` or any full-rate USB packet trace while anyone is actively listening to or relying on the live audio — confirmed 2026-09-10 to itself cause audible audio breakup, likely by adding enough CPU/interrupt load to perturb the same fragile timing this investigation is trying to observe. See `USB-AUDIO-GLITCH.md` → "A real methodological trap: usbmon makes it worse."
+
+## Issue: Behringer fallback interface never actually worked — misconfigured ALSA device
+
+### Root cause
+`config.json`'s `audio_network.alsa_device` (used by `BehringerInterface`, the automatic fallback when the GoXLR is briefly unavailable in `audio_interface: "auto"` mode) was set to `hw:0,0` — a numeric ALSA card **index**, not a name. Card indices are fragile and can shift; more importantly, `hw:0,0` normally refers to whatever's enumerated first, which under normal operation **is the GoXLR itself** (`/proc/asound/cards` card 0). The Behringer fallback interface has therefore never actually pointed at the Behringer — the moment the GoXLR genuinely disappears (the only time this fallback path is used), index 0 resolves to nothing, and the fallback crashes into a wall of ALSA "No such file or directory"/protocol errors for several seconds before `_interface_monitor`'s next poll notices the GoXLR is back and switches back. Confirmed live 2026-09-10 — a routine ~3s GoXLR hotplug turned into an ~11s error cascade because of this.
+
+Found in both the live deployment's `config.json` and the repo's `config.example.json` template — this was wrong from initial setup, not a regression.
+
+### Diagnosis
+```bash
+python3 -c "import json; print(json.load(open('/opt/briclite/config.json'))['audio_network']['alsa_device'])"
+# hw:0,0 is wrong. Compare against:
+cat /proc/asound/cards   # find the Behringer's actual card name (normally "CODEC")
+```
+
+### Fix
+Set `alsa_device` to the name-based form, matching the same practice already used for the GoXLR elsewhere in this codebase (`hw:GoXLRMini,0`, never a numeric index):
+```json
+"alsa_device": "hw:CODEC,0"
+```
+**Fixed 2026-09-10** in both `/opt/briclite/config.json` (live) and `briclite/config.example.json` (repo template). Deploy via the standard restart+reconnect round-trip (see "deploying a code change causes an extended outage" above).
+
+## Issue: codec silently stays disconnected after the GoXLR reappears (auto-mode interface hot-swap)
+
+### Root cause
+`main.py`'s `_interface_monitor()` polls every 5s and, in `audio_interface: "auto"` mode, hot-swaps between `GoXLRInterface` and `BehringerInterface` when GoXLR presence changes. The code that handles this transition constructed a new `PipelineController` but **never called `.start()` on it** — unlike every other reconnect path in the file (`_full_reconnect()`, the old inline `_rx_watchdog()` logic), which all correctly call `.start()`. The pipeline object existed, fully built, sitting in `Gst.State.NULL`, with no bound socket and no running threads — `is_active` stayed `False` forever until someone manually called `/api/connect`. This bug is pre-existing (predates 2026-09-10's other work) but had never been observed before because the GoXLR had been rock-solid throughout the whole investigation up to that point — it only manifests when the GoXLR is genuinely absent long enough for the auto-mode poll to fail over to Behringer and then come back.
+
+### Diagnosis
+After any GoXLR hotplug event, check for a `Started (jitter buf ...)` log line following an `Audio interface switched to GoXLR` line. If `switched to GoXLR` appears with no `Started` line after it (and no TX/RX state transitions), the pipeline was rebuilt but never started.
+```bash
+journalctl -u briclite --since "-5 min" | grep -A5 "Audio interface switched to"
+```
+
+### Fix
+**Fixed 2026-09-10.** `_interface_monitor`'s hot-swap block now calls `controller.start(loop)` after constructing the new controller, matching every other reconnect path. (This was later further consolidated — see the next entry — to go through `_full_reconnect()` entirely rather than duplicating the stop/construct/start sequence inline.)
+
+## Issue: RX network watchdog silently stops detecting outages under concurrent reconnect triggers
+
+### Root cause
+Three separate places in `main.py` rebuild the global `PipelineController`: `_full_reconnect()` (properly serialised behind `_full_reconnect_lock`), and — until 2026-09-10 — `_rx_watchdog()` and `_interface_monitor()`'s hot-swap block, **both of which duplicated the stop/construct/start sequence inline with no locking at all.** Under rapid concurrent triggers (confirmed live: a deliberate USB port swap firing the device-error path, the stall watchdog, and an interface hot-swap within the same few seconds), these unlocked paths raced on the shared `controller` global. The practical effect: `_rx_watchdog()`'s own loop silently stopped detecting further outages — a genuine RX outage then persisted for **100+ seconds with zero automatic recovery**, something that had never happened before in this investigation (every prior outage had self-healed within 2-15s). Required a manual `/api/disconnect` + `/api/connect` to restore.
+
+No crash/traceback was logged — the task didn't die with an exception, it just stopped meaningfully checking (or its state got clobbered by a concurrent reassignment of the same global from another path).
+
+### Diagnosis
+If RX has been idle for well over the 10s watchdog threshold with no `No RX packets for Xs — auto-reconnecting` line in the log, the watchdog itself is stuck:
+```bash
+journalctl -u briclite --since "-5 min" | grep -E "RX socket idle|No RX packets|Pipeline fault|switched to"
+```
+Idle time climbing steadily with no corresponding watchdog/reconnect line is the signature. Restarting the service (`sudo systemctl restart briclite`, then reconnect) always clears it, since it creates a fresh watchdog task.
+
+### Fix
+**Fixed 2026-09-10.** Both `_rx_watchdog()` and `_interface_monitor()`'s hot-swap path now call `await _full_reconnect(...)` instead of duplicating the rebuild logic, so every pipeline rebuild — regardless of which trigger caused it — is serialised behind the same `_full_reconnect_lock`. See `ARCHITECTURE.md` §8 (Threading Model) for the updated invariant.
 
 ## Debug Logging
 
