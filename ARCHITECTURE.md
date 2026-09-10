@@ -360,20 +360,24 @@ goxlr_mix.
 | D | LineIn | Music player (GoXLR line in) | ✓ |
 | — | Music | Studio return (codec RX Left) | — |
 
-The studio return (Music bus) has no fader and is never in the broadcast mix. It is only audible in headphones via the Bleep PFL button.
+The studio return (Music bus) has no fader and is never in the broadcast mix. It is audible on the two local monitor outputs—Headphones and Line Out—only via the Bleep PFL button.
 
 **Bleep button — Studio Return PFL:**
 
 `monitor_pfl()` runs as a background asyncio task, subscribing to the goxlr-utility WebSocket (`ws://localhost:14564/api/websocket`). On each `button_down/Bleep: true` event, it toggles studio return PFL:
 
-- *PFL on:* All fader sources removed from headphones (`SetRouter`). Music bus routed to headphones. Music volume set to 255 (`SetVolume`) for true pre-fade monitoring regardless of internal volume. Bleep LED → orange.
-- *PFL off:* Headphone routing restored. Music volume restored. Bleep LED → cyan.
+- *PFL on:* All fader sources removed from Headphones and Line Out (`SetRouter`). Music bus routed to both monitor outputs. Music volume set to 255 (`SetVolume`) for true pre-fade monitoring regardless of internal volume. Bleep LED → orange.
+- *PFL off:* Headphones and Line Out are restored to the normal fader mix. Music volume restored. Bleep LED → cyan.
 
 IPC calls triggered by button events run in a thread pool (`asyncio.to_thread`) to avoid blocking the FastAPI event loop.
 
 **Headphone volume control:**
 
 `POST /api/headphone_volume {"pct": 0–100}` calls `SetVolume ["Headphones", N]`. Visible in the web UI as a slider (GoXLR mode only). Current volume is read from `GetStatus` at startup and included in WebSocket telemetry.
+
+**Speaker volume control:**
+
+In GoXLR mode, `POST /api/rx_volume {"pct": 0–100}` adjusts the hardware `LineOut` master via `SetVolume`, controlling the complete physical speaker mix. The actual hardware value is read back after connection and reflected in telemetry. In Behringer-only mode the endpoint adjusts the common receive pipeline's `rx_vol` software gain (`100%` = unity); `PipelineController.rx_volume_pct` retains that software setting across pipeline rebuilds.
 
 ### Auto-detection and hotplug
 
@@ -395,7 +399,7 @@ The goxlr-utility daemon (`goxlr-daemon.service`) must be running for GoXLR mode
 
 **Loss concealment:** Packet repetition only. Produces stuttering on burst losses. No interpolation or algorithmic PLC.
 
-**Residual GoXLR playback glitch — isolated below the application on 2026-09-09:** The buffer/`SCHED_FIFO` hardening did not fix the audible fault. A loss-free RTP/ADTS capture decoded cleanly offline, and the operator heard no glitch in the captured WAV. The glitch persisted with the Behringer and `audiomixer` removed, with `audiorate` removed, and with the GoXLR path simplified to one 24→48 kHz conversion. It then reproduced in a generated GStreamer tone and finally in a native `aplay` 10-channel S32LE/48 kHz tone that bypassed Codec, Python, AAC, RTP, resampling, and GStreamer. During a native glitch ALSA still held approximately 18,600–19,100 of 19,200 frames and reported no XRUN; the kernel logged no USB error. The fault is therefore in or below the GoXLR's Linux USB-audio implicit-feedback path, not clock drift or application starvation. Stopping `goxlr-daemon` greatly reduced the rate (several glitches/minute enabled versus one in about seven minutes and a later clean four-minute interval stopped), but did not eliminate it. Kernel `6.8.0-139` is now running and awaits the same controlled tone test. See `CURRENT-STATUS.md` for exact evidence, times, live state, and next steps.
+**Residual GoXLR playback glitch — isolated below the application and now objectively recorded:** The buffer/`SCHED_FIFO` hardening did not fix the audible fault. Native `aplay` first reproduced it while ALSA remained almost fully buffered with no XRUN/kernel error. On 2026-09-10 a duplex hardware-loopback test then recorded exact-zero Game/BroadcastMix gaps while unrelated GoXLR capture channels continued: 5 gaps/5 min at 106.7–137.3 ms with a patched 50 ms daemon, versus 4 gaps/5 min at 118.9–132.1 ms with the daemon stopped. This confirms loss in the GoXLR playback path before BroadcastMix and shows that daemon polling is neither the root cause nor required. Prefer a newer GoXLR firmware or newer HWE kernel over a 100 ms polling build. See `USB-AUDIO-GLITCH.md` and `CURRENT-STATUS.md` for evidence, artifacts, and live state.
 
 **Deploying a code change requires a live-audio-impacting service restart — no auto-reconnect on boot, and the remote can cascade a second outage.** Confirmed live 2026-09-09 doing the fix above. `systemctl restart briclite.service` kills the whole process; `main.py`'s `lifespan()` never calls `PipelineController.stop()` on shutdown (it only cancels the monitor/watchdog background tasks), so no `DISCONNECTED`/`-60dBFS` telemetry is ever pushed for this — and the codec does **not** auto-connect on boot (`lifespan()` constructs a fresh, un-started `PipelineController`; `/api/connect` is a deliberate, separate call). A first attempt left ~28s between the restart and manually calling `/api/connect`, which was long enough for the remote (Comrex-like device) to drop its own session on the TX gap (see `_rx_watchdog()`'s docstring), causing a *second*, fully automatic ~12s outage when our own watchdog then noticed no RX packets and did its own full reconnect — nearly 76s of cumulative disruption from one deploy, including two silent PFL resets (see below). **Fix for next time:** restart and reconnect in one shell round-trip with no human-turn delay in between (poll `curl http://127.0.0.1/` until it returns 200, then immediately `POST /api/connect`) — redone this way for the PFL fix later the same day, total outage ~4.5s, no watchdog cascade. The web dashboard is also not a reliable indicator of an outage like this: its telemetry websocket (`web/templates/index.html`) has no explicit "server disconnected" state — `ws.onclose` just retries every 1s with no visual change to the meters/status in the meantime, so a raw process kill can look like "nothing changed" on screen even though the underlying codec was fully down.
 

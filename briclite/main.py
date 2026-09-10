@@ -30,8 +30,12 @@ interface: Optional[AudioInterface] = None
 async def _sync_goxlr_state(iface: AudioInterface) -> None:
     """Push GoXLR-specific values into global state after an interface is created."""
     if isinstance(iface, GoXLRInterface):
-        vol = iface.get_headphone_volume()
-        await global_state.update_metrics({"headphone_volume": vol})
+        headphone_vol = iface.get_headphone_volume()
+        line_out_pct = round(iface.get_line_out_volume() * 100 / 255)
+        await global_state.update_metrics({
+            "headphone_volume": headphone_vol,
+            "rx_volume": line_out_pct,
+        })
 
 
 def _make_interface(cfg: dict) -> AudioInterface:
@@ -84,9 +88,15 @@ async def _full_reconnect(rx_channel_mode: Optional[str] = None) -> None:
             return
         loop = asyncio.get_event_loop()
         mode = rx_channel_mode if rx_channel_mode is not None else controller.rx_channel_mode
+        snapshot = await global_state.get_snapshot()
+        # GoXLR uses its hardware LineOut master for Speaker Volume, so its
+        # software RX gain must remain at unity. Behringer mode carries the
+        # same UI percentage in the software gain instead.
+        volume_pct = 100 if isinstance(interface, GoXLRInterface) else snapshot.get("rx_volume", 100)
         controller.stop(loop)
         await asyncio.sleep(0.3)
         controller = PipelineController(config, interface, rx_channel_mode=mode,
+                                         rx_volume_pct=volume_pct,
                                          on_pipeline_fault=_on_pipeline_fault)
         controller.start(loop)
 
@@ -266,7 +276,11 @@ async def connect_codec(body: ConnectRequest = ConnectRequest()):
         config["audio_network"]["target_ip"] = body.target_ip
     snapshot = await global_state.get_snapshot()
     saved_mode = snapshot.get("rx_channel_mode", "stereo")
+    # In GoXLR mode the Speaker slider controls the hardware LineOut master;
+    # keep the software receive gain at unity to avoid applying both gains.
+    saved_volume = 100 if isinstance(interface, GoXLRInterface) else snapshot.get("rx_volume", 100)
     controller = PipelineController(config, interface, rx_channel_mode=saved_mode,
+                                     rx_volume_pct=saved_volume,
                                      on_pipeline_fault=_on_pipeline_fault)
     controller.start(loop)
     return {"status": "success", "message": "Pipeline active"}
@@ -298,7 +312,10 @@ async def set_headphone_volume(body: HeadphoneVolumeRequest):
 async def set_rx_volume(body: RxVolumeRequest):
     if not 0 <= body.pct <= 100:
         return {"status": "error", "message": "pct must be 0–100"}
-    controller.set_rx_volume(body.pct)
+    if isinstance(interface, GoXLRInterface):
+        interface.set_line_out_volume(round(body.pct * 255 / 100))
+    else:
+        controller.set_rx_volume(body.pct)
     await global_state.update_metrics({"rx_volume": body.pct})
     return {"status": "success"}
 

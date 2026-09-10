@@ -23,6 +23,7 @@ _ALSA_CONFIG_PATH = os.path.expanduser("~/.asoundrc")
 _PFL_COLOUR      = "FF8800"  # orange — studio return PFL active
 _NORMAL_COLOUR   = "00FFFF"  # cyan   — normal
 _BEHRINGER_DEVICE = "hw:CODEC,0"
+_MONITOR_OUTPUTS = ("Headphones", "LineOut")
 
 # audiomixer's automatic latency query fails on this pipeline ("Latency query
 # failed" — the mix of a manually-fed appsrc branch and a live alsasrc branch
@@ -118,7 +119,7 @@ class GoXLRInterface(AudioInterface):
         self._serial: str | None = None
         self._studio_pfl: bool = False
         self._studio_saved_volume: int | None = None
-        self._hp_routing: dict[str, bool] = {}
+        self._monitor_routing: dict[tuple[str, str], bool] = {}
         if _IS_MACOS:
             goxlr_cfg = config.get("goxlr", {})
             self._mac_tx_device: str = goxlr_cfg.get("mac_tx_device", "")
@@ -232,7 +233,7 @@ class GoXLRInterface(AudioInterface):
             if not self._mac_rx_device or self._capture_channels <= 2:
                 uid = f'unique-id="{self._mac_rx_device}" ' if self._mac_rx_device else ''
                 return (
-                    f'audioconvert ! volume name=rx_vol volume=1.0 ! '
+                    f'audioconvert ! '
                     f'osxaudiosink {uid}sync=false '
                     f'buffer-time={ALSA_BUFFER_TIME_US} latency-time={ALSA_LATENCY_TIME_US}'
                 )
@@ -294,8 +295,12 @@ class GoXLRInterface(AudioInterface):
         # be silently dropped underneath them. A genuinely fresh instance
         # (see __init__, used on process boot and GoXLR hotplug) still starts
         # with PFL off, which is correct there.
-        self._hp_routing = {_FADER_TO_SOURCE[f]: True for f, _ in _FADERS}
-        self._hp_routing["Music"] = False  # studio return starts off in headphones
+        monitor_sources = [_FADER_TO_SOURCE[f] for f, _ in _FADERS] + ["Music"]
+        self._monitor_routing = {
+            (source, output): _ROUTING[source][output]
+            for source in monitor_sources
+            for output in _MONITOR_OUTPUTS
+        }
         if not _IS_MACOS:
             self._write_alsa_config()
         if not GoXLRInterface.is_available():
@@ -312,7 +317,7 @@ class GoXLRInterface(AudioInterface):
         if self._studio_pfl:
             # Reassert PFL routing/volume/colour over the non-PFL defaults
             # _apply_routing()/_apply_colours() just set above.
-            self._apply_headphone_routing()
+            self._apply_monitor_routing()
             if self._studio_saved_volume is None:
                 self._apply_studio_pfl_volume()
             else:
@@ -350,20 +355,19 @@ class GoXLRInterface(AudioInterface):
             self._cmd({"SetFaderColours": [fader, _NORMAL_COLOUR, "000000"]})
         self._cmd({"SetButtonColours": ["Bleep", _NORMAL_COLOUR, "000000"]})
 
-    def _apply_headphone_routing(self) -> None:
-        """Solo Music (studio return) in headphones when PFL active; restore full mix when not.
+    def _apply_monitor_routing(self) -> None:
+        """Solo Music in headphones and Line Out during PFL; restore both when off.
         Only sends SetRouter for crosspoints whose state has actually changed."""
-        for fader, _ in _FADERS:
-            source = _FADER_TO_SOURCE[fader]
-            enabled = not self._studio_pfl
-            if self._hp_routing.get(source) != enabled:
-                self._cmd({"SetRouter": [source, "Headphones", enabled]})
-                self._hp_routing[source] = enabled
-        # Music (studio return): only routed to headphones during PFL
-        music_enabled = self._studio_pfl
-        if self._hp_routing.get("Music") != music_enabled:
-            self._cmd({"SetRouter": ["Music", "Headphones", music_enabled]})
-            self._hp_routing["Music"] = music_enabled
+        desired = {
+            **{_FADER_TO_SOURCE[fader]: not self._studio_pfl for fader, _ in _FADERS},
+            "Music": self._studio_pfl,
+        }
+        for source, enabled in desired.items():
+            for output in _MONITOR_OUTPUTS:
+                key = (source, output)
+                if self._monitor_routing.get(key) != enabled:
+                    self._cmd({"SetRouter": [source, output, enabled]})
+                    self._monitor_routing[key] = enabled
 
     def _apply_studio_pfl_volume(self) -> None:
         """Override Music volume to 255 when PFL active (true pre-fade listen);
@@ -397,6 +401,21 @@ class GoXLRInterface(AudioInterface):
             return
         self._cmd({"SetVolume": ["Headphones", max(0, min(255, level))]})
 
+    def get_line_out_volume(self) -> int:
+        if not GoXLRInterface.is_available():
+            return 255
+        status = self._ipc({"GetStatus": None})
+        mixers = status.get("Status", {}).get("mixers", {})
+        if not mixers:
+            return 255
+        mixer = next(iter(mixers.values()))
+        return mixer["levels"]["volumes"]["LineOut"]
+
+    def set_line_out_volume(self, level: int) -> None:
+        if self._serial is None:
+            return
+        self._cmd({"SetVolume": ["LineOut", max(0, min(255, level))]})
+
     async def monitor_pfl(self) -> None:
         """Subscribe to the GoXLR daemon WebSocket and handle studio return PFL via Bleep button."""
         log = logging.getLogger("goxlr.pfl")
@@ -424,7 +443,7 @@ class GoXLRInterface(AudioInterface):
                 f"starting GoXLR IPC burst"
             )
             await asyncio.to_thread(self._apply_studio_pfl_volume)
-            await asyncio.to_thread(self._apply_headphone_routing)
+            await asyncio.to_thread(self._apply_monitor_routing)
             await asyncio.to_thread(self._set_bleep_colour)
             dt_ms = (time.monotonic() - t0) * 1000
             logger.info(

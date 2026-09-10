@@ -440,7 +440,7 @@ The earlier `audiorate`/RTP-timestamp correction proposal does not apply to the 
 - [ ] SSH working and passwordless sudo configured
 - [ ] Service user added to `audio` group
 - [ ] Behringer plugged in; `aplay -l` confirms device enumeration
-- [ ] **If using a GoXLR Mini:** plugged into its own direct USB host port, not sharing a hub with the Behringer or any USB peripherals (mixing USB speed classes on one hub caused repeated device resets — see `GOXLR-MINI-LINUX.md` §12)
+- [ ] **If using a GoXLR Mini:** avoid unnecessary external hubs and mixed full/low-speed peripherals. On the PSA300 both rear sockets feed the same internal single-TT hub, so swapping sockets does not isolate devices; see `GOXLR-MINI-LINUX.md` §12 and `USB-AUDIO-GLITCH.md` for the current Behringer HID-unbind experiment.
 - [ ] All GStreamer packages installed including `gstreamer1.0-alsa` and `gstreamer1.0-fdkaac`
 - [ ] Python venv created with `--system-site-packages`
 - [ ] FastAPI/uvicorn installed in venv

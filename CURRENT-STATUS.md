@@ -2,13 +2,53 @@
 
 This is the handoff document for the live residual RX-audio glitch investigation, started 2026-09-09. Read this before resuming tests on the PSA300 — start with the most recent dated section below and work backward; older sections are historical record. For the full technical deep-dive specifically on the USB/audio glitch (not the overnight-flood or bug-fixing threads), see `USB-AUDIO-GLITCH.md`.
 
+## Update — 2026-09-10 afternoon/evening: objective glitch capture, Behringer HID experiment, monitor-output controls
+
+### The residual GoXLR glitch can now be measured without listening
+
+A five-minute full-duplex hardware-loopback test now gives objective evidence of the short playback fault. Briclite was disconnected, a deterministic 997 Hz tone was written directly to the GoXLR's 10-channel playback PCM on Game (channels 2/3), Game was routed into BroadcastMix, and the GoXLR's 21-channel capture PCM was recorded simultaneously. The unrelated capture channels continued normally while the returned Game signal contained exact-zero runs, proving the loss occurs in the GoXLR playback/Game path before BroadcastMix rather than in the recording process.
+
+Results:
+
+- Patched goxlr-daemon with **50 ms status polling**: 5 gaps in 5 minutes, **106.7–137.3 ms**.
+- goxlr-daemon **stopped entirely**: 4 gaps in 5 minutes, **118.9–132.1 ms**.
+
+Therefore neither 50 ms polling nor stopping the daemon fixes the glitch, and the daemon is not required for it to occur. A 100 ms build/test has not been run and is now low-value; a newer GoXLR firmware (if available) or a newer Ubuntu HWE kernel is the more useful next experiment. The stock `/usr/bin/goxlr-daemon` v1.2.4 is active again. The unused 50 ms binary remains staged at `/home/marlowfm/goxlr-daemon-1.2.4-poll50ms`; raw captures and scripts remain under `/tmp/goxlr-loopback-*` and `/tmp/run_goxlr_loopback.sh` on the PSA300.
+
+This residual 100–137 ms playback fault is separate from Behringer USB resets and their multi-second reconnect/network cascade, although both are audible through PFL.
+
+### Behringer resets continued after removing mouse and keyboard
+
+The Behringer reset spontaneously at **10:40:33, 11:28:27, and 16:38:05 UTC** while it was the only full/low-speed device on the internal hub's shared Transaction Translator. This disproves the earlier claim that Behringer+keyboard/mouse TT contention was the complete reset cause. At 16:38 the reset invalidated ALSA handles, triggered Briclite's automatic full reconnect, and was followed by a genuine remote RTP outage of about **12.3 seconds**. That explains the reported multi-second PFL drop at that time; PSA CPU load and the local LAN were not the initiating fault.
+
+The Behringer PCM2902 (`08bb:2902`) also exposes an otherwise-unused Consumer Control HID interface (mute/volume keys) at USB interface `1-1.1:1.3`. Linux `usbhid` recovery can call `usb_queue_reset_device()` after repeated interrupt-transfer errors, resetting the whole composite USB device including its audio interfaces. This is the strongest testable initiator hypothesis, but it is not yet proven because the default kernel log contains only the resulting reset.
+
+At approximately 17:20 UTC that HID interface alone was **transiently unbound** from `usbhid`. The three `snd-usb-audio` interfaces remained bound, Briclite retained the same PCM handles/PID, both services stayed active, and no USB or audio fault occurred during the operation. Current `lsusb -t` shows the Behringer HID interface with `Driver=[none]`. This is a soak test:
+
+- It is runtime-only; a Behringer reset/replug or host reboot will bind HID again.
+- If no Behringer reset occurs over roughly 24 hours, make the ignore/unbind persistent (for example a device-specific HID ignore quirk or udev interface-unbind rule).
+- If a reset occurs while HID is still unbound, reject the HID hypothesis and move to cable/device replacement, a powered multi-TT hub, or a PCIe xHCI controller.
+
+### Web monitor controls fixed and deployed
+
+- **Speaker Volume** now controls the GoXLR's actual `LineOut` master in GoXLR mode. It was verified live: 100%=`255`, 50%=`128`, then restored to 100%=`255`. In Behringer-only mode it controls a common `rx_vol` GStreamer gain; telemetry now includes `rx_volume`, and software gain survives pipeline rebuilds.
+- **Bleep/PFL** now treats Headphones and Line Out as the same monitor pair. Engaging PFL removes Microphone/Chat/Game/LineIn from both and routes Music/studio return to both; releasing it restores the normal mix on both. Verified against live GoXLR routing after a physical Bleep press.
+
+### Live state at this handoff (17:53 UTC)
+
+- PSA300 kernel `6.8.0-139-generic`; `briclite.service` and stock `goxlr-daemon.service` active; codec connected to `217.36.229.106:5004`.
+- Repository code exactly matches the four deployed files under `/opt/briclite/`.
+- Behringer: USB `1-1.1`, audio interfaces bound, HID interface `1-1.1:1.3` unbound for the reset soak test.
+- GoXLR Line Out and Headphones are both `255`. PFL is **off**: normal fader sources route to both outputs; Music/studio return routes to neither until Bleep is pressed.
+- Several isolated `libav` malformed-AAC warnings occurred around reconnects/testing. They remain a separate receive-stream observation; no pipeline fault or persistent outage accompanied the latest ones.
+
 ## Update — 2026-09-10 morning: overnight unattended run + Behringer USB-reset log flood, now fixed
 
 Graham left the codec running unattended overnight (2026-09-09 20:24 → 2026-09-10 07:xx) sending music to the remote, as a soak test. `briclite.service`/`goxlr-daemon.service` never crashed or restarted, and the TX/RX link to the remote never dropped or reconnected once — the core broadcast path held up cleanly all night.
 
 However: a Behringer USB reset at 23:23:21 UTC (`usb 1-1.2.1: reset full-speed USB device`, kernel log) left one GStreamer ALSA element in the RX pipeline spinning forever on a dead PCM handle (`SNDRV_PCM_IOCTL_DELAY failed (-19): No such device`, ~20/sec). It was never noticed because `_interface_monitor`'s Behringer-presence poll doesn't detect a reset (the ALSA card stays enumerated throughout, only a full unplug/replug would have tripped it) and nothing else was watching for it. By the time it was checked at ~07:15 it had logged **583,838** lines (~430MB) over ~8 hours, still ongoing. Three more resets happened overnight without incident (01:22 ×2, 04:04, 04:46) — evidently not all resets trigger the stuck-thread condition, just some.
 
-Root cause of the resets themselves: the Behringer (full-speed/12Mbps) now shares its USB hub with the mouse and keyboard (low-speed/1.5Mbps) — a known, long-standing Linux/EHCI kernel quirk (mixing full- and low-speed devices behind one hub/Transaction-Translator on an older EHCI controller), not something briclite caused or can fully prevent. This is a *different* hub-sharing conflict than the GoXLR/Behringer one fixed 2026-09-09 (see `TROUBLESHOOTING.md` "Issue: Behringer ... repeatedly disconnect, reset" for both).
+Initial reset hypothesis at that point: the Behringer (full-speed/12Mbps) shared its USB hub with the mouse and keyboard (low-speed/1.5Mbps), matching a known Linux/EHCI mixed-speed reset class. Later evidence showed this was incomplete: resets continued after the HID peripherals were removed. See the newer section above and `USB-AUDIO-GLITCH.md`.
 
 **Fixed and deployed 2026-09-10, ~07:30 UTC:**
 - `pipeline_manager.py`/`main.py`: a device-loss GST bus error now triggers an automatic `_full_reconnect()` (~2s), instead of the affected element spinning indefinitely. See `TROUBLESHOOTING.md` for the mechanism.

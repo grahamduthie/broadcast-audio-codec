@@ -372,9 +372,9 @@ Config key `system.audio_interface` accepts `"auto"` (default), `"goxlr"`, or `"
 | B | Chat | Guest microphone (Behringer `hw:CODEC,0`) | ✓ | ✓ | ✓ | USB capture from Behringer |
 | C | Game | News feed (codec RX Right) | ✓ | ✓ | ✓ | |
 | D | LineIn | Music player (GoXLR 3.5mm line in) | ✓ | ✓ | ✓ | |
-| — | Music | Studio return (codec RX Left) | — | — | PFL only | No fader; Bleep PFL only |
+| — | Music | Studio return (codec RX Left) | — | PFL only | PFL only | No fader; Bleep PFL only |
 
-The studio return is on the Music bus with no fader assigned, so it is invisible to the routing matrix during normal operation. It is **not** routed to BroadcastMix or LineOut under any circumstances.
+The studio return is on the Music bus with no fader assigned. It is absent from both monitor outputs during normal operation and is never routed to BroadcastMix; Bleep/PFL solos it to Headphones and Line Out together.
 
 ### Mute buttons
 
@@ -384,8 +384,8 @@ All four fader mute buttons use `SetFaderMuteFunction: "All"` — standard GoXLR
 
 The Bleep button is repurposed as a **PFL toggle** for the studio return (codec RX Left):
 
-- **Press once:** Bleep LED goes orange. All fader sources (A–D) are removed from headphones via `SetRouter`. Music bus is routed to headphones via `SetRouter`. Music channel volume is overridden to 255 via `SetVolume` (true pre-fade listen — audible regardless of internal volume state).
-- **Press again:** Bleep LED returns to cyan. Headphone routing is restored to normal (all fader sources). Music volume is restored to its pre-PFL value.
+- **Press once:** Bleep LED goes orange. All fader sources (A–D) are removed from both Headphones and Line Out via `SetRouter`. Music bus is routed to both monitor outputs. Music channel volume is overridden to 255 via `SetVolume` (true pre-fade listen — audible regardless of internal volume state).
+- **Press again:** Bleep LED returns to cyan. Headphones and Line Out are restored to the normal fader mix. Music volume is restored to its pre-PFL value.
 
 The studio return (RX Left / Music bus) is never in the broadcast mix, so activating PFL has no on-air effect.
 
@@ -395,8 +395,12 @@ Implementation: `monitor_pfl()` subscribes to `ws://localhost:14564/api/websocke
 
 `POST /api/headphone_volume` with `{"pct": 0–100}` calls `SetVolume ["Headphones", N]` (N = pct × 255 / 100). The web UI shows a slider in GoXLR mode only. The current volume is read from `GetStatus` at startup and broadcast via WebSocket telemetry so the slider initialises to the actual hardware state.
 
+### Speaker volume
+
+In GoXLR mode, `POST /api/rx_volume` with `{"pct": 0–100}` calls `SetVolume ["LineOut", N]` (N = pct × 255 / 100), so the web UI's Speaker Volume slider controls the complete physical Line Out mix. The current hardware value is read back after connection and reported in WebSocket telemetry. In Behringer-only mode the same endpoint instead controls the receive pipeline's `rx_vol` software gain (`100%` is unity).
+
 ### `start()`
-1. Reset PFL state
+1. Reset the routing cache; preserve/reassert an in-process PFL state if present
 2. Write `~/.asoundrc` with the `goxlr_broadcast` virtual capture device
 3. Connect to daemon socket, retrieve device serial
 4. Apply fader assignments via `SetFader`
@@ -465,13 +469,13 @@ When applying a routing matrix, **omit `ChatMic` from all rows** to avoid these 
 
 ---
 
-## 12. USB Topology — Keep the GoXLR Off Mixed-Speed Hubs
+## 12. USB Topology on the PSA300
 
 **Discovered 2026-09-09 on the PSA300.** The GoXLR Mini is a USB **high-speed** (480 Mbps) device. The Behringer UCA202 is **full-speed** (12 Mbps), and typical USB keyboard/mouse dongles are **low-speed** (1.5 Mbps). Putting all three behind the same external hub caused the Behringer and the keyboard/mouse to repeatedly reset (`dmesg`: `usb 1-1.1.1: reset full-speed USB device`, `usb 1-1.1.4: reset low-speed USB device`, recurring every few minutes) while the GoXLR itself stayed completely stable — a known class of problem with hub chipsets that struggle to reliably bridge a mix of speed classes on the same hub. Confirmed via `journalctl -u briclite`: the Behringer's ALSA capture threw `SNDRV_PCM_IOCTL_DELAY failed (-19): No such device` **886 times in 10 minutes** while wedged.
 
-**Fix:** plug the GoXLR directly into a host USB port (bypassing any hub entirely), and put the Behringer + any low-speed peripherals on a separate hub/port. On the PSA300 (only two physical ports: one USB3, one standard USB2), this means: GoXLR → USB3 port direct; external hub (Behringer + keyboard/mouse) → the other port. Confirmed with `lsusb -t` (GoXLR shows as a direct child of the root hub, no longer sharing a downstream hub with anything) and zero `No such device` errors over a full minute of monitoring afterward, versus hundreds per 10 minutes before.
+Later `lsusb -v` evidence superseded the initial physical-port interpretation: both rear sockets lead through the same internal 8-port, **single-TT** high-speed hub and the board has only one EHCI controller. The high-speed GoXLR does not itself consume the hub's Transaction Translator; full/low-speed devices do. The mouse and keyboard were therefore removed and the Behringer connected without the external hub, leaving it as the only TT client.
 
-This was a genuine hardware/wiring issue, not a code bug — but it directly caused the audiomixer instability in §5 to manifest far more severely when combined with the Behringer's second-mic branch (the flaky capture source was one of the aggregator's two input pads). Even after the audiomixer latency fix, keep the GoXLR isolated from mixed-speed devices as a matter of course on any new deployment.
+That improved the topology but did **not** eliminate Behringer resets: three spontaneous resets followed at 10:40:33, 11:28:27, and 16:38:05 UTC on 2026-09-10. Mixed-speed TT contention was therefore not the complete cause. The current experiment has transiently unbound the Behringer PCM2902's unused HID consumer-control interface (`1-1.1:1.3`) while leaving its three audio interfaces active; see `USB-AUDIO-GLITCH.md` for the hypothesis, limitations, and next steps.
 
 ## 13. Residual Native-ALSA Playback Glitch
 
@@ -479,7 +483,7 @@ This was a genuine hardware/wiring issue, not a code bug — but it directly cau
 
 The GoXLR exposes asynchronous 10-channel playback on endpoint `0x08` with implicit feedback from its 21-channel capture endpoint `0x88`. This matches upstream [kernel bug 211211](https://bugzilla.kernel.org/show_bug.cgi?id=211211) and [alsa-lib issue 113](https://github.com/alsa-project/alsa-lib/issues/113): GoXLR output stutters under direct ALSA while capture stays clean, with implicit-feedback handling identified as the relevant kernel area.
 
-`goxlr-daemon` is an aggravating factor, not the sole cause. On kernel `6.8.0-124`, daemon-enabled tone produced several glitches in about a minute; daemon-off tests produced one glitch in about seven minutes followed by a clean four-minute interval. The PSA300 now runs installed kernel `6.8.0-139`; repeat the identical daemon-enabled native-tone test before changing application code. Exact commands, timestamps, and live state are in `CURRENT-STATUS.md`.
+The glitch is now objectively visible in a duplex hardware-loopback capture, not just by ear. On kernel `6.8.0-139`, a patched daemon polling every 50 ms produced 5 exact-zero gaps in five minutes (106.7–137.3 ms); with the daemon stopped, the same test produced 4 (118.9–132.1 ms). Slower polling therefore did not fix it and the daemon is not required. A newer GoXLR firmware or newer HWE kernel is a better next experiment than a 100 ms polling build. Exact method, artifacts, and live state are in `USB-AUDIO-GLITCH.md` and `CURRENT-STATUS.md`.
 
 ## 14. Useful References
 

@@ -153,7 +153,7 @@ class JitterBuffer:
 class PipelineController:
 
     def __init__(self, config: dict, interface: AudioInterface, rx_channel_mode: str = "stereo",
-                 on_pipeline_fault=None):
+                 rx_volume_pct: int = 100, on_pipeline_fault=None):
         Gst.init(None)
         net = config["audio_network"]
         self.interface  = interface
@@ -185,6 +185,11 @@ class PipelineController:
         self.rtp_ssrc   = random.randint(0, 0xFFFFFFFF)
 
         self.rx_channel_mode  = rx_channel_mode
+        # Speaker-volume gain for the network receive path. Keep this on the
+        # controller rather than only on the GStreamer element so an RX-only
+        # pipeline rebuild (channel-mode change, USB hotplug, etc.) preserves
+        # the operator's selected level.
+        self.rx_volume_pct = max(0, min(100, rx_volume_pct))
         self._rx_rebuild_timer = None
         self._rx_rebuild_lock  = threading.Lock()
         self.jitter_buf  = JitterBuffer(latency_ms=self.latency_ms)
@@ -219,6 +224,7 @@ class PipelineController:
             f'audiomixmatrix name=rx_router in-channels=2 out-channels=2 matrix="{matrix}" ! '
             f"level name=rx_meter ! audioresample ! "
             f"audio/x-raw,rate={rx_rate},channels=2 ! "
+            f"volume name=rx_vol volume={self.rx_volume_pct / 100.0} ! "
             f"{self.interface.rx_sink_bin()}"
         )
         for extra in self.interface.extra_rx_source_bins():
@@ -338,9 +344,10 @@ class PipelineController:
         )
 
     def set_rx_volume(self, pct: int) -> None:
+        self.rx_volume_pct = max(0, min(100, pct))
         vol = self.rx_pipeline.get_by_name("rx_vol")
         if vol:
-            vol.set_property("volume", max(0.0, min(1.0, pct / 100.0)))
+            vol.set_property("volume", self.rx_volume_pct / 100.0)
 
     def set_rx_channel_mode(self, mode: str):
         self.rx_channel_mode = mode
