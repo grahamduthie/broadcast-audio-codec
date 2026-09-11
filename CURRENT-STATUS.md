@@ -2,6 +2,57 @@
 
 This is the handoff document for the live residual RX-audio glitch investigation, started 2026-09-09. Read this before resuming tests on the PSA300 — start with the most recent dated section below and work backward; older sections are historical record. For the full technical deep-dive specifically on the USB/audio glitch (not the overnight-flood or bug-fixing threads), see `USB-AUDIO-GLITCH.md`.
 
+## Update — 2026-09-11: GoXLR Utility web UI enabled for the headless PSA300
+
+The GoXLR is attached to the headless PSA300, not to the Lenovo operator
+laptop.  The GoXLR Utility is a web UI served by `goxlr-daemon` on TCP 14564;
+the Lenovo at `172.16.10.212` can now use:
+
+```
+http://172.16.10.213:14564/
+```
+
+The durable PSA configuration is the systemd drop-in
+`/etc/systemd/system/goxlr-daemon.service.d/network-ui.conf`, which replaces
+the service command with:
+
+```
+/usr/bin/goxlr-daemon --log-level info --disable-tray true --http-bind-address 0.0.0.0
+```
+
+UFW deliberately limits external access to `14564/tcp` on `codec0` from only
+`172.16.10.212` (rule comment: `Lenovo GoXLR Utility UI`).  Do not open this
+unauthenticated mixer-control interface to the wider LAN or Internet.
+
+### Critical localhost requirement
+
+Do **not** replace the `0.0.0.0` bind above with `172.16.10.213` alone.  That
+looks safer, but it removes the daemon's localhost listener.  Briclite's
+`monitor_pfl()` connects to `ws://localhost:14564/api/websocket` for PFL,
+physical fader, and fader-mute events.  When the daemon was briefly bound only
+to `172.16.10.213`, the subscriber logged repeated `Connection refused`; it
+could not mirror Fader C to the clean-news branch or clear amber pickup LEDs
+after physical fader movement.
+
+With the all-interface bind plus the source-restricted firewall rule, both
+remote Lenovo access and local Briclite WebSocket access work.  Verified after
+the final restart: the daemon listens on `0.0.0.0:14564`, `curl
+http://127.0.0.1:14564/` returns HTTP 200, `goxlr.pfl` logs `PFL monitor
+connected`, and both `goxlr-daemon.service` and `briclite.service` are active.
+Restarting `goxlr-daemon` also restarts Briclite through its `PartOf=`
+relationship; the persisted requested link restored automatically.  Schedule
+future daemon changes accordingly.
+
+### Amber LEDs after the web-UI change
+
+Amber is Briclite's recovery/pickup indication, not a hardware fault: it means
+the fader's logical level was restored but Briclite has not observed a physical
+post-recovery movement.  The address-only bind prevented the WebSocket event
+from arriving, which is why moving a fader did not return it to cyan.  The
+WebSocket monitor is connected again; the next real movement of each fader
+will clear that fader's amber colour to cyan.  Do not clear all LEDs manually,
+as the individual amber state is useful confirmation of soft-pickup status.
+
 ## Update — 2026-09-11: clean news return mix deployed and timing-validated
 
 The PSA300 is running the clean-news workaround.  Local commit `1761eba`

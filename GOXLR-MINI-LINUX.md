@@ -224,6 +224,25 @@ journalctl -u goxlr-daemon -f
 
 The daemon auto-detects the GoXLR Mini on USB. It saves profiles to `~/.config/goxlr-utility/`.
 
+### Headless PSA300 web UI (deployed 2026-09-11)
+
+The daemon serves the GoXLR Utility UI as well as its API.  On the headless
+PSA300, the operator opens it remotely from the authorised Lenovo at:
+
+```
+http://172.16.10.213:14564/
+```
+
+The daemon normally binds HTTP to `localhost`.  On the PSA it is overridden by
+`/etc/systemd/system/goxlr-daemon.service.d/network-ui.conf` to add
+`--http-bind-address 0.0.0.0`; UFW allows TCP/14564 on `codec0` only from
+`172.16.10.212`.  Binding specifically to `172.16.10.213` is **wrong** for
+this application: Briclite's event subscriber uses
+`ws://localhost:14564/api/websocket`, so it must retain a localhost-reachable
+listener.  Keep the all-interface bind and firewall source restriction as a
+pair.  The HTTP control interface has no suitable public-network protection;
+never expose it outside the management LAN.
+
 ---
 
 ## 8. Daemon IPC API

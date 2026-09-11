@@ -378,6 +378,16 @@ The studio return (Music bus) has no fader and is never in the broadcast mix. It
 
 IPC calls triggered by button events run in a thread pool (`asyncio.to_thread`) to avoid blocking the FastAPI event loop.
 
+**WebSocket reachability is a functional requirement.** This same subscription
+also persists physical A--D fader changes, mirrors Fader C/Game to the
+PSA-side clean-news gain/mute, and clears the per-fader amber soft-pickup
+indication.  The headless PSA300 exposes the GoXLR Utility UI to its authorised
+Lenovo via TCP/14564, but the daemon must still listen on localhost.  Its
+systemd drop-in therefore starts it with `--http-bind-address 0.0.0.0`; UFW,
+not a single-address daemon bind, restricts port 14564 to the Lenovo.  An
+address-only bind to `172.16.10.213` breaks `ws://localhost:14564` and leaves
+PFL/fader event handling disconnected.
+
 **Headphone volume control:**
 
 `POST /api/headphone_volume {"pct": 0–100}` calls `SetVolume ["Headphones", N]`. Visible in the web UI as a slider (GoXLR mode only). Current volume is read from `GetStatus` at startup and included in WebSocket telemetry.
