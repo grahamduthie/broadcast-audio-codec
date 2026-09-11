@@ -23,6 +23,7 @@ _ALSA_CONFIG_PATH = os.path.expanduser("~/.asoundrc")
 
 _PFL_COLOUR      = "FF8800"  # orange — studio return PFL active
 _NORMAL_COLOUR   = "00FFFF"  # cyan   — normal
+_PICKUP_COLOUR   = "FFB000"  # amber — logical level restored; physical position unverified
 _BEHRINGER_DEVICE = "hw:CODEC,0"
 _MONITOR_OUTPUTS = ("Headphones", "LineOut")
 
@@ -118,11 +119,29 @@ class GoXLRInterface(AudioInterface):
 
     def __init__(self, config: dict, studio_pfl: bool = False,
                  studio_saved_volume: Optional[int] = None,
-                 on_pfl_changed: Optional[Callable[[bool, Optional[int]], None]] = None):
+                 on_pfl_changed: Optional[Callable[[bool, Optional[int]], None]] = None,
+                 restored_fader_volumes: Optional[dict[str, int]] = None,
+                 on_fader_volume_changed: Optional[Callable[[str, int], None]] = None,
+                 on_volume_changed: Optional[Callable[[str, int], None]] = None):
         self._serial: str | None = None
         self._studio_pfl = studio_pfl
         self._studio_saved_volume = studio_saved_volume if studio_pfl else None
         self._on_pfl_changed = on_pfl_changed
+        valid_channels = {channel for _, channel in _FADERS}
+        supplied_volumes = restored_fader_volumes if isinstance(restored_fader_volumes, dict) else {}
+        self._restored_fader_volumes = {
+            channel: level
+            for channel, level in supplied_volumes.items()
+            if channel in valid_channels and isinstance(level, int) and 0 <= level <= 255
+        }
+        # The GoXLR has non-motorised faders. Amber identifies controls whose
+        # restored logical value may still need physical soft pickup.
+        self._pending_pickup_faders = {
+            fader for fader, channel in _FADERS if channel in self._restored_fader_volumes
+        }
+        self._pickup_ignore_until = 0.0
+        self._on_fader_volume_changed = on_fader_volume_changed
+        self._on_volume_changed = on_volume_changed
         self._monitor_routing: dict[tuple[str, str], bool] = {}
         if _IS_MACOS:
             goxlr_cfg = config.get("goxlr", {})
@@ -315,6 +334,7 @@ class GoXLRInterface(AudioInterface):
         self._serial = next(iter(status["Status"]["mixers"]))
         logger.info(f"GoXLR Mini ready: serial={self._serial}")
         self._apply_faders()
+        self._apply_fader_volumes()
         self._apply_routing()
         self._apply_mute_functions()
         self._apply_colours()
@@ -332,6 +352,9 @@ class GoXLRInterface(AudioInterface):
                 # pre-PFL value we're holding onto).
                 self._cmd({"SetVolume": ["Music", 255]})
             self._set_bleep_colour()
+        # SetVolume is echoed through the daemon WebSocket. Do not mistake
+        # our restoration commands for a physical slider pickup.
+        self._pickup_ignore_until = time.monotonic() + 4.0
 
     def stop(self) -> None:
         pass
@@ -343,6 +366,12 @@ class GoXLRInterface(AudioInterface):
     def _apply_faders(self) -> None:
         for fader, channel in _FADERS:
             self._cmd({"SetFader": [fader, channel]})
+
+    def _apply_fader_volumes(self) -> None:
+        """Restore logical levels; GoXLR soft pickup protects against jumps."""
+        for _, channel in _FADERS:
+            if channel in self._restored_fader_volumes:
+                self._cmd({"SetVolume": [channel, self._restored_fader_volumes[channel]]})
 
     def _apply_routing(self) -> None:
         for source, outputs in _ROUTING.items():
@@ -356,8 +385,12 @@ class GoXLRInterface(AudioInterface):
     def _apply_colours(self) -> None:
         for fader, _ in _FADERS:
             self._cmd({"SetFaderDisplayStyle": [fader, "Gradient"]})
-            self._cmd({"SetFaderColours": [fader, _NORMAL_COLOUR, "000000"]})
+            self._set_fader_colour(fader)
         self._cmd({"SetButtonColours": ["Bleep", _NORMAL_COLOUR, "000000"]})
+
+    def _set_fader_colour(self, fader: str) -> None:
+        colour = _PICKUP_COLOUR if fader in self._pending_pickup_faders else _NORMAL_COLOUR
+        self._cmd({"SetFaderColours": [fader, colour, "000000"]})
 
     def _apply_monitor_routing(self) -> None:
         """Solo Music in headphones and Line Out during PFL; restore both when off.
@@ -424,6 +457,21 @@ class GoXLRInterface(AudioInterface):
         """Return the desired PFL state so a new process can restore it."""
         return self._studio_pfl, self._studio_saved_volume
 
+    def get_fader_volumes(self) -> dict[str, int]:
+        """Return the four broadcast fader levels currently held by the daemon."""
+        if not GoXLRInterface.is_available():
+            return {}
+        status = self._ipc({"GetStatus": None})
+        mixers = status.get("Status", {}).get("mixers", {})
+        if not mixers:
+            return {}
+        volumes = next(iter(mixers.values())).get("levels", {}).get("volumes", {})
+        return {
+            channel: volumes[channel]
+            for _, channel in _FADERS
+            if isinstance(volumes.get(channel), int) and 0 <= volumes[channel] <= 255
+        }
+
     async def monitor_pfl(self) -> None:
         """Subscribe to the GoXLR daemon WebSocket and handle studio return PFL via Bleep button."""
         log = logging.getLogger("goxlr.pfl")
@@ -442,6 +490,24 @@ class GoXLRInterface(AudioInterface):
     async def _handle_ws_message(self, data: dict) -> None:
         for patch in data.get("data", {}).get("Patch", []):
             path = patch.get("path", "")
+            value = patch.get("value")
+            if isinstance(value, int) and 0 <= value <= 255:
+                for channel in ("Headphones", "LineOut"):
+                    if path.endswith(f"/levels/volumes/{channel}"):
+                        if self._on_volume_changed is not None:
+                            self._on_volume_changed(channel, value)
+                        break
+            for fader, channel in _FADERS:
+                if (path.endswith(f"/levels/volumes/{channel}")
+                        and isinstance(value, int) and 0 <= value <= 255):
+                    if self._on_fader_volume_changed is not None:
+                        self._on_fader_volume_changed(channel, value)
+                    if (fader in self._pending_pickup_faders
+                            and time.monotonic() >= self._pickup_ignore_until):
+                        self._pending_pickup_faders.remove(fader)
+                        await asyncio.to_thread(self._set_fader_colour, fader)
+                        logger.info("Fader %s physically picked up after recovery", fader)
+                    break
             if "/button_down/Bleep" not in path or patch.get("value") is not True:
                 continue
             self._studio_pfl = not self._studio_pfl

@@ -39,6 +39,33 @@ def _persist_pfl_state(active: bool, saved_volume: Optional[int]) -> None:
     desired_state.save(desired)
 
 
+def _persist_goxlr_fader_volume(channel: str, level: int) -> None:
+    """Keep the GoXLR daemon's logical fader level across an outage."""
+    desired = desired_state.load()
+    if not desired or channel not in {"Mic", "Chat", "Game", "LineIn"}:
+        return
+    volumes = desired.get("goxlr_fader_volumes")
+    if not isinstance(volumes, dict):
+        volumes = {}
+    volumes[channel] = level
+    desired["goxlr_fader_volumes"] = volumes
+    desired_state.save(desired)
+
+
+def _persist_goxlr_monitor_volume(channel: str, level: int) -> None:
+    """Keep locally adjusted GoXLR monitor controls across an outage."""
+    desired = desired_state.load()
+    if not desired:
+        return
+    if channel == "Headphones":
+        desired["headphone_volume"] = level
+    elif channel == "LineOut":
+        desired["rx_volume"] = round(level * 100 / 255)
+    else:
+        return
+    desired_state.save(desired)
+
+
 async def _sync_goxlr_state(iface: AudioInterface) -> None:
     """Push GoXLR-specific values into global state after an interface is created."""
     if isinstance(iface, GoXLRInterface):
@@ -56,6 +83,9 @@ def _make_interface(cfg: dict) -> AudioInterface:
         "studio_pfl": bool(desired.get("studio_pfl", False)),
         "studio_saved_volume": desired.get("studio_saved_volume"),
         "on_pfl_changed": _persist_pfl_state,
+        "restored_fader_volumes": desired.get("goxlr_fader_volumes"),
+        "on_fader_volume_changed": _persist_goxlr_fader_volume,
+        "on_volume_changed": _persist_goxlr_monitor_volume,
     }
     kind = cfg.get("system", {}).get("audio_interface", "auto")
     if kind == "goxlr":
@@ -77,6 +107,9 @@ async def _save_desired_link() -> None:
     studio_saved_volume = None
     if isinstance(interface, GoXLRInterface):
         studio_pfl, studio_saved_volume = interface.studio_pfl_state()
+        fader_volumes = interface.get_fader_volumes()
+    else:
+        fader_volumes = {}
     desired_state.save({
         "target_ip": config["audio_network"]["target_ip"],
         "rx_channel_mode": snapshot.get("rx_channel_mode", "stereo"),
@@ -85,6 +118,7 @@ async def _save_desired_link() -> None:
         "audio_interface": "GoXLR" if isinstance(interface, GoXLRInterface) else "Behringer",
         "studio_pfl": studio_pfl,
         "studio_saved_volume": studio_saved_volume,
+        "goxlr_fader_volumes": fader_volumes,
     })
 
 
@@ -118,6 +152,11 @@ async def _restore_desired_link() -> bool:
         on_pipeline_fault=_on_pipeline_fault,
     )
     controller.start(loop)
+    if isinstance(interface, GoXLRInterface):
+        headphone = desired.get("headphone_volume", 255)
+        if isinstance(headphone, int) and 0 <= headphone <= 255:
+            interface.set_headphone_volume(headphone)
+        interface.set_line_out_volume(round(volume * 255 / 100))
     logging.getLogger("main").info("Restored requested codec link after service startup")
     return True
 

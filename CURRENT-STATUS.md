@@ -21,6 +21,11 @@ active-link record exists. Daily package-list downloads still occur, while
 package installation is deferred until the codec is deliberately disconnected
 for maintenance. See `BUILD.md` §7.1 and `TROUBLESHOOTING.md` for operations.
 
+The GoXLR recovery record additionally preserves the four broadcast fader
+levels. On recovery they are restored with the device's native soft-pickup
+behaviour; amber fader LEDs mark levels whose physical slider position has not
+yet been seen after the outage. They return to cyan when that fader moves.
+
 ## Update — 2026-09-10 afternoon/evening: objective glitch capture, Behringer HID experiment, monitor-output controls
 
 ### The residual GoXLR glitch can now be measured without listening

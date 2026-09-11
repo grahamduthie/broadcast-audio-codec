@@ -317,6 +317,12 @@ left connected. The GoXLR configuration and saved PFL state are reapplied as
 part of that start. An intentional disconnect stays disconnected after a
 restart.
 
+The four GoXLR broadcast-fader values are also retained. Because their
+physical sliders are not motorised, a restored fader is amber until it reports
+a real post-recovery movement; the GoXLR's normal soft pickup prevents a
+sudden level jump in the meantime. Amber is an advisory state only — audio
+continues at the restored value.
+
 Install the repository's `systemd/briclite.service`, rather than keeping a
 locally edited copy: it supplies the persistent state directory and makes
 Briclite start after, and restart with, `goxlr-daemon.service`.

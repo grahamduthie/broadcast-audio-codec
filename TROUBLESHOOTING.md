@@ -537,6 +537,21 @@ run `sudo apt update && sudo apt upgrade`, then reconnect and confirm the
 link. If a restart occurs before this version is deployed, the previous active
 state cannot be recovered automatically; reconnect once from the web UI.
 
+## GoXLR fader LEDs are amber after recovery
+
+### Meaning
+
+Amber A–D fader gradients mean Briclite restored the GoXLR daemon's logical
+fader level from before a Briclite/GoXLR restart. Audio remains at that level:
+an open channel stays open. The physical sliders are non-motorised and the
+daemon WebSocket supplies no initial physical-position snapshot, so Briclite
+cannot know whether a slider was moved while the unit was unavailable.
+
+The GoXLR's ordinary soft-pickup protects against an abrupt level jump. Move a
+fader through its displayed/restored level; when the daemon reports that real
+fader movement, its LED returns from amber to cyan. This indication is not an
+alarm and does not mute, close, or otherwise alter the channel.
+
 ## Debug Logging
 
 ### Enable verbose GStreamer logging
