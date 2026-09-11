@@ -11,6 +11,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from core.data_broker import global_state
+from core.desired_state import DesiredState
 from core.pipeline_manager import PipelineController
 from interfaces.base import AudioInterface
 from interfaces.behringer import BehringerInterface
@@ -25,6 +26,17 @@ with open(os.path.join(_BRICLITE_HOME, "config.json")) as f:
 
 controller: Optional[PipelineController] = None
 interface: Optional[AudioInterface] = None
+desired_state = DesiredState()
+
+
+def _persist_pfl_state(active: bool, saved_volume: Optional[int]) -> None:
+    """Keep PFL intent across a Briclite or GoXLR-daemon process restart."""
+    desired = desired_state.load()
+    if not desired:
+        return
+    desired["studio_pfl"] = active
+    desired["studio_saved_volume"] = saved_volume if active else None
+    desired_state.save(desired)
 
 
 async def _sync_goxlr_state(iface: AudioInterface) -> None:
@@ -39,17 +51,75 @@ async def _sync_goxlr_state(iface: AudioInterface) -> None:
 
 
 def _make_interface(cfg: dict) -> AudioInterface:
+    desired = desired_state.load()
+    goxlr_options = {
+        "studio_pfl": bool(desired.get("studio_pfl", False)),
+        "studio_saved_volume": desired.get("studio_saved_volume"),
+        "on_pfl_changed": _persist_pfl_state,
+    }
     kind = cfg.get("system", {}).get("audio_interface", "auto")
     if kind == "goxlr":
-        return GoXLRInterface(cfg)
+        return GoXLRInterface(cfg, **goxlr_options)
     if kind == "behringer":
         return BehringerInterface(cfg)
     # auto: GoXLR takes priority when available
     if GoXLRInterface.is_available():
         logging.getLogger("main").info("GoXLR Mini detected — using GoXLR interface")
-        return GoXLRInterface(cfg)
+        return GoXLRInterface(cfg, **goxlr_options)
     logging.getLogger("main").info("No GoXLR Mini found — using Behringer interface")
     return BehringerInterface(cfg)
+
+
+async def _save_desired_link() -> None:
+    """Persist all operator-controlled values needed to recreate an active link."""
+    snapshot = await global_state.get_snapshot()
+    studio_pfl = False
+    studio_saved_volume = None
+    if isinstance(interface, GoXLRInterface):
+        studio_pfl, studio_saved_volume = interface.studio_pfl_state()
+    desired_state.save({
+        "target_ip": config["audio_network"]["target_ip"],
+        "rx_channel_mode": snapshot.get("rx_channel_mode", "stereo"),
+        "rx_volume": snapshot.get("rx_volume", 100),
+        "headphone_volume": snapshot.get("headphone_volume", 255),
+        "audio_interface": "GoXLR" if isinstance(interface, GoXLRInterface) else "Behringer",
+        "studio_pfl": studio_pfl,
+        "studio_saved_volume": studio_saved_volume,
+    })
+
+
+async def _restore_desired_link() -> bool:
+    """Start the pipeline only when a previous operator requested it stay live."""
+    global controller, interface
+    desired = desired_state.load()
+    if not desired or controller.is_active:
+        return False
+    wanted_interface = desired.get("audio_interface")
+    if wanted_interface == "GoXLR" and not isinstance(interface, GoXLRInterface):
+        return False
+    target_ip = desired.get("target_ip")
+    if isinstance(target_ip, str) and target_ip:
+        config["audio_network"]["target_ip"] = target_ip
+    mode = desired.get("rx_channel_mode", "stereo")
+    if mode not in {"stereo", "left", "right"}:
+        mode = "stereo"
+    volume = desired.get("rx_volume", 100)
+    if not isinstance(volume, int) or not 0 <= volume <= 100:
+        volume = 100
+    await global_state.update_metrics({
+        "rx_channel_mode": mode,
+        "rx_volume": volume,
+        "headphone_volume": desired.get("headphone_volume", 255),
+    })
+    loop = asyncio.get_event_loop()
+    controller = PipelineController(
+        config, interface, rx_channel_mode=mode,
+        rx_volume_pct=100 if isinstance(interface, GoXLRInterface) else volume,
+        on_pipeline_fault=_on_pipeline_fault,
+    )
+    controller.start(loop)
+    logging.getLogger("main").info("Restored requested codec link after service startup")
+    return True
 
 
 async def _cancel_task(task: Optional[asyncio.Task]) -> None:
@@ -225,6 +295,8 @@ async def _interface_monitor():
             log.info(f"Audio interface switched to {mode}")
             if isinstance(interface, GoXLRInterface):
                 pfl_task = asyncio.create_task(interface.monitor_pfl())
+            if desired_state.load() and not controller.is_active:
+                await _restore_desired_link()
     finally:
         await _cancel_task(pfl_task)
 
@@ -232,12 +304,19 @@ async def _interface_monitor():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global controller, interface
+    desired = desired_state.load()
+    target_ip = desired.get("target_ip")
+    if isinstance(target_ip, str) and target_ip:
+        config["audio_network"]["target_ip"] = target_ip
     interface = _make_interface(config)
     controller = PipelineController(config, interface, on_pipeline_fault=_on_pipeline_fault)
     mode = "GoXLR" if isinstance(interface, GoXLRInterface) else "Behringer"
     await global_state.update_metrics({"audio_interface": mode})
     await _sync_goxlr_state(interface)
-    await global_state.update_metrics({"rx_volume": 100})
+    if not desired:
+        await global_state.update_metrics({"rx_volume": 100})
+    else:
+        await _restore_desired_link()
     monitor  = asyncio.create_task(_interface_monitor())
     watchdog = asyncio.create_task(_rx_watchdog())
     yield
@@ -247,6 +326,8 @@ async def lifespan(app: FastAPI):
             await task
         except asyncio.CancelledError:
             pass
+    if controller.is_active:
+        controller.stop(asyncio.get_event_loop())
 
 
 app = FastAPI(title="Broadcast Audio Codec Core", lifespan=lifespan)
@@ -274,6 +355,7 @@ async def connect_codec(body: ConnectRequest = ConnectRequest()):
         return {"status": "error", "message": "Already running"}
     if body.target_ip:
         config["audio_network"]["target_ip"] = body.target_ip
+    await _save_desired_link()
     snapshot = await global_state.get_snapshot()
     saved_mode = snapshot.get("rx_channel_mode", "stereo")
     # In GoXLR mode the Speaker slider controls the hardware LineOut master;
@@ -295,6 +377,8 @@ async def set_rx_mode(body: RxModeRequest):
         await _full_reconnect(body.mode)
     else:
         controller.set_rx_channel_mode(body.mode)
+    if desired_state.load():
+        await _save_desired_link()
     return {"status": "success", "message": f"RX routing: {body.mode}"}
 
 
@@ -305,6 +389,8 @@ async def set_headphone_volume(body: HeadphoneVolumeRequest):
     level = round(body.pct * 255 / 100)
     interface.set_headphone_volume(level)
     await global_state.update_metrics({"headphone_volume": level})
+    if desired_state.load():
+        await _save_desired_link()
     return {"status": "success"}
 
 
@@ -317,6 +403,8 @@ async def set_rx_volume(body: RxVolumeRequest):
     else:
         controller.set_rx_volume(body.pct)
     await global_state.update_metrics({"rx_volume": body.pct})
+    if desired_state.load():
+        await _save_desired_link()
     return {"status": "success"}
 
 
@@ -325,6 +413,7 @@ async def disconnect_codec():
     loop = asyncio.get_event_loop()
     if not controller.is_active:
         return {"status": "error", "message": "Pipeline inactive"}
+    desired_state.clear()
     controller.stop(loop)
     return {"status": "success", "message": "Pipeline halted"}
 

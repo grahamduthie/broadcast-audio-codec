@@ -1,0 +1,24 @@
+[Unit]
+Description=Marlow FM PSA300 Broadcast Codec
+After=network-online.target goxlr-daemon.service
+Wants=network-online.target goxlr-daemon.service
+PartOf=goxlr-daemon.service
+
+[Service]
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_SYS_NICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SYS_NICE
+LimitRTPRIO=20
+ExecStart=/opt/briclite/venv/bin/python /opt/briclite/main.py
+WorkingDirectory=/opt/briclite
+Restart=on-failure
+RestartSec=5
+User=marlowfm
+StateDirectory=briclite
+StateDirectoryMode=0750
+Environment=BRICLITE_STATE_DIR=/var/lib/briclite
+Environment=GST_DEBUG=2
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=1000
+
+[Install]
+WantedBy=multi-user.target

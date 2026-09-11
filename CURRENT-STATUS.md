@@ -1,6 +1,25 @@
-# Current Investigation Status — updated 2026-09-10
+# Current Investigation Status — updated 2026-09-11
 
 This is the handoff document for the live residual RX-audio glitch investigation, started 2026-09-09. Read this before resuming tests on the PSA300 — start with the most recent dated section below and work backward; older sections are historical record. For the full technical deep-dive specifically on the USB/audio glitch (not the overnight-flood or bug-fixing threads), see `USB-AUDIO-GLITCH.md`.
+
+## Update — 2026-09-11: restart continuity and unattended-update guard
+
+The previous morning's `apt-daily-upgrade` run restarted Briclite and the
+GoXLR daemon while a codec link had been in use. Neither service crashed and
+the host did not reboot, but the link remained inactive because the requested
+connection and PFL state existed only in the old Python process.
+
+The deployed design now persists active operator intent in
+`/var/lib/briclite/desired-link.json`. Connecting writes the target and audio
+settings before the pipeline starts; disconnecting removes it. A new Briclite
+process restores the pipeline, GoXLR setup and PFL state only when that record
+exists. The service is also ordered after and coupled to `goxlr-daemon` so a
+daemon restart triggers Briclite recovery.
+
+`apt-daily-upgrade.service` is conditionally skipped whenever the durable
+active-link record exists. Daily package-list downloads still occur, while
+package installation is deferred until the codec is deliberately disconnected
+for maintenance. See `BUILD.md` §7.1 and `TROUBLESHOOTING.md` for operations.
 
 ## Update — 2026-09-10 afternoon/evening: objective glitch capture, Behringer HID experiment, monitor-output controls
 

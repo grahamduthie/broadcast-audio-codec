@@ -499,6 +499,44 @@ Idle time climbing steadily with no corresponding watchdog/reconnect line is the
 ### Fix
 **Fixed 2026-09-10.** Both `_rx_watchdog()` and `_interface_monitor()`'s hot-swap path now call `await _full_reconnect(...)` instead of duplicating the rebuild logic, so every pipeline rebuild — regardless of which trigger caused it — is serialised behind the same `_full_reconnect_lock`. See `ARCHITECTURE.md` §8 (Threading Model) for the updated invariant.
 
+## Unattended updates restarted the codec and it did not reconnect
+
+### Symptom
+
+The GoXLR returns to its `Default` profile and the Briclite process is active,
+but the codec link is no longer connected. On the PSA300 this happened at
+06:35 UTC on 2026-09-11 when `apt-daily-upgrade.service` installed Python and
+`libc` updates. The package manager restarted Briclite and the GoXLR daemon;
+the old process held the requested connection only in memory, so the new
+process had no instruction to reconnect.
+
+### Fix and operating model
+
+From 2026-09-11, Briclite records an active operator request in
+`/var/lib/briclite/desired-link.json` immediately before `/api/connect`
+starts the pipeline. It includes target address, receive mode and level,
+headphone level, selected interface, and GoXLR PFL state. A clean
+`/api/disconnect` removes it. On startup, Briclite restores only a saved
+active request; it does not surprise-connect a codec that was deliberately
+disconnected.
+
+The installed unit is ordered after `goxlr-daemon.service` and uses
+`PartOf=goxlr-daemon.service`, so restarting the daemon also restarts
+Briclite and performs the same recovery. The `apt-daily-upgrade` drop-in
+declines unattended installation while that desired-link file exists:
+
+```bash
+sudo systemctl cat apt-daily-upgrade.service
+sudo systemctl status briclite.service goxlr-daemon.service
+sudo journalctl -u briclite -b | grep -E 'Restored requested codec link|Pipeline'
+```
+
+The daily update **check and download** still run. Apply queued security and
+kernel updates deliberately during a maintenance window: disconnect the codec,
+run `sudo apt update && sudo apt upgrade`, then reconnect and confirm the
+link. If a restart occurs before this version is deployed, the previous active
+state cannot be recovered automatically; reconnect once from the web UI.
+
 ## Debug Logging
 
 ### Enable verbose GStreamer logging

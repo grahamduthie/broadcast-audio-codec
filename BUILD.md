@@ -306,7 +306,36 @@ sudo systemctl enable --now briclite.service
 
 `CAP_SYS_NICE`/`LimitRTPRIO=20` let the RX playout thread (`_playout_loop()` in `pipeline_manager.py`) raise itself to `SCHED_FIFO` priority, so a brief GIL/CPU scheduling stall can't starve the direct `hw:` ALSA sink and cause an audible glitch — see ARCHITECTURE.md §10/§12.4. Without this grant the process falls back to normal scheduling and just logs a warning; it is not required for the service to run, only to get the full benefit of this hardening. **Granted and confirmed live on the PSA300 2026-09-09** (`journalctl` shows `Playout thread: SCHED_FIFO priority 10`). **Applying it to an already-running unit requires `daemon-reload` + a service restart, which briefly drops the live RTP session — schedule that deliberately rather than during a broadcast.**
 
-**Whenever you restart the live service (any code deploy included), reconnect immediately in the same breath rather than as a separate step** — the codec does not auto-reconnect on boot, and leaving more than ~10s between the restart finishing and calling `/api/connect` risks a second, fully automatic outage (the remote drops its own session on the TX gap, then our RX watchdog auto-reconnects again ~10-12s later) plus a silent GoXLR PFL reset each time this happens. See `TROUBLESHOOTING.md` → "Issue: deploying a code change causes an extended outage and/or resets GoXLR PFL" for the exact one-shot restart+reconnect script (confirmed ~4-5s total outage, no cascade, vs. ~76s hit doing it as two separate steps).
+### 7.1 Restart recovery and unattended updates
+
+The installed unit uses `/var/lib/briclite/desired-link.json` to retain an
+operator's request for an active link. `POST /api/connect` atomically writes
+the target and current receive, monitor and PFL settings before starting the
+pipeline; `POST /api/disconnect` removes the file. On a Briclite restart the
+service therefore restores only a link that the operator had deliberately
+left connected. The GoXLR configuration and saved PFL state are reapplied as
+part of that start. An intentional disconnect stays disconnected after a
+restart.
+
+Install the repository's `systemd/briclite.service`, rather than keeping a
+locally edited copy: it supplies the persistent state directory and makes
+Briclite start after, and restart with, `goxlr-daemon.service`.
+
+On Ubuntu, `apt-daily-upgrade.service` normally runs each morning with a
+random delay and can restart libraries and services. Install the supplied
+drop-in too:
+
+```bash
+sudo install -D -m 0644 systemd/apt-daily-upgrade.service.d/10-briclite-active-link.conf \
+  /etc/systemd/system/apt-daily-upgrade.service.d/10-briclite-active-link.conf
+sudo systemctl daemon-reload
+```
+
+It prevents **unattended package installation** while the durable active-link
+file exists. The regular `apt-daily.service` download/check still runs, so
+updates remain ready to install once the codec is deliberately disconnected.
+This is a broadcast-continuity guard, not a replacement for patching: schedule
+and run `sudo apt update && sudo apt upgrade` during a maintenance window.
 
 ---
 

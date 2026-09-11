@@ -6,6 +6,7 @@ import struct
 import json
 import logging
 import time
+from typing import Callable, Optional
 
 import websockets
 
@@ -115,10 +116,13 @@ def _broadcast_extract_matrix(n_in: int) -> str:
 
 class GoXLRInterface(AudioInterface):
 
-    def __init__(self, config: dict):
+    def __init__(self, config: dict, studio_pfl: bool = False,
+                 studio_saved_volume: Optional[int] = None,
+                 on_pfl_changed: Optional[Callable[[bool, Optional[int]], None]] = None):
         self._serial: str | None = None
-        self._studio_pfl: bool = False
-        self._studio_saved_volume: int | None = None
+        self._studio_pfl = studio_pfl
+        self._studio_saved_volume = studio_saved_volume if studio_pfl else None
+        self._on_pfl_changed = on_pfl_changed
         self._monitor_routing: dict[tuple[str, str], bool] = {}
         if _IS_MACOS:
             goxlr_cfg = config.get("goxlr", {})
@@ -416,6 +420,10 @@ class GoXLRInterface(AudioInterface):
             return
         self._cmd({"SetVolume": ["LineOut", max(0, min(255, level))]})
 
+    def studio_pfl_state(self) -> tuple[bool, Optional[int]]:
+        """Return the desired PFL state so a new process can restore it."""
+        return self._studio_pfl, self._studio_saved_volume
+
     async def monitor_pfl(self) -> None:
         """Subscribe to the GoXLR daemon WebSocket and handle studio return PFL via Bleep button."""
         log = logging.getLogger("goxlr.pfl")
@@ -445,6 +453,8 @@ class GoXLRInterface(AudioInterface):
             await asyncio.to_thread(self._apply_studio_pfl_volume)
             await asyncio.to_thread(self._apply_monitor_routing)
             await asyncio.to_thread(self._set_bleep_colour)
+            if self._on_pfl_changed is not None:
+                self._on_pfl_changed(self._studio_pfl, self._studio_saved_volume)
             dt_ms = (time.monotonic() - t0) * 1000
             logger.info(
                 f"Studio return PFL {'active' if self._studio_pfl else 'off'} "
