@@ -2,6 +2,66 @@
 
 This is the handoff document for the live residual RX-audio glitch investigation, started 2026-09-09. Read this before resuming tests on the PSA300 — start with the most recent dated section below and work backward; older sections are historical record. For the full technical deep-dive specifically on the USB/audio glitch (not the overnight-flood or bug-fixing threads), see `USB-AUDIO-GLITCH.md`.
 
+## Update — 2026-09-11: durable GoXLR fader recovery and pickup indication
+
+Following the unattended-update recovery work, Graham reported a real desk
+usability problem: after a reset, the daemon could retain an open logical
+fader value while the non-motorised physical slider was closed (or had been
+moved during the outage). The GoXLR then requires the slider to cross the
+remembered value before it takes effect. This is its normal soft-pickup
+protection and must be retained: forcing physical and virtual state to agree
+would risk an abrupt, on-air level jump.
+
+### Protocol result
+
+The goxlr-utility WebSocket at `ws://localhost:14564/api/websocket` sends no
+initial fader-position snapshot when a client connects. It publishes only
+JSON Patch changes after movement, e.g.
+`/mixers/<serial>/levels/volumes/LineIn = 222`. A live D-fader test produced
+a continuous sequence of such absolute logical levels. Therefore Briclite
+cannot know a slider's physical position, or prove it moved during an outage,
+until a post-recovery fader event arrives. Do not try to replace the daemon's
+soft-pickup mechanism without a new lower-level device-protocol capability.
+
+### Implemented behaviour
+
+Commit `3168824` (after restart-continuity commit `8a828e8`) is deployed on
+the PSA300 and pushed to `main`.
+
+- `/var/lib/briclite/desired-link.json` now stores `goxlr_fader_volumes` for
+  `Mic`, `Chat`, `Game`, and `LineIn`, as well as Headphones and Line Out.
+  The WebSocket persists physical fader/monitor changes while a desired active
+  link exists.
+- A fresh `GoXLRInterface` applies those logical fader values on recovery.
+  An open channel thus stays open; no fader is muted or closed while awaiting
+  a physical movement.
+- Restored A–D fader LED gradients are steady amber (`FFB000`), meaning
+  "logical level restored; physical position unverified". The first fader
+  volume patch more than four seconds after restoration changes just that
+  fader back to normal cyan. The four-second guard ignores echoes of
+  Briclite's own `SetVolume` restoration commands.
+- The indication is advisory only. It does not change routing, PFL, mute, or
+  audio gain. Do not replace it with flashing: repeated lighting commands are
+  undesirable on this USB-audio-sensitive device and amber is unambiguous at
+  the desk.
+
+### Deployment verification
+
+Immediately before deployment, the active desired-link record was seeded
+from the live GoXLR daemon: `Mic=1`, `Chat=0`, `Game=0`, `LineIn=233`,
+Headphones `178`, Line Out `230` (stored UI equivalent `rx_volume=90`). A
+controlled `briclite.service` restart restored the codec link to
+`217.36.229.106:5004`, the exact values above, and all four fader colours
+reported as amber. Both `briclite.service` and `goxlr-daemon.service` were
+active. The fader-event handling path was also unit-checked locally with a
+simulated `LineIn` patch; it persisted the value and changed D from amber to
+cyan.
+
+Operationally, amber after a recovery is expected: move a fader through its
+displayed/restored level to make its physical control active and return its
+LED to cyan. An untouched amber fader continues to pass audio at its restored
+logical level.
+
 ## Update — 2026-09-11: restart continuity and unattended-update guard
 
 The previous morning's `apt-daily-upgrade` run restarted Briclite and the
