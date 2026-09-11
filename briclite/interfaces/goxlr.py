@@ -34,6 +34,14 @@ _MONITOR_OUTPUTS = ("Headphones", "LineOut")
 # buffers actually line up instead of the aggregator starving/stalling.
 _GOXLR_MIX_PROPS = "ignore-inactive-pads=true min-upstream-latency=200000000 latency=200000000"
 
+# The Game path normally has this much ALSA buffering before it is visible in
+# the GoXLR capture/BroadcastMix.  The clean-news branch bypasses that path,
+# so it must be delayed by the same order of magnitude before it is mixed with
+# the hardware capture.  This is deliberately configurable: the exact value
+# is a property of the live ALSA/USB path and must be confirmed by a tone test.
+_DEFAULT_CLEAN_NEWS_ALIGNMENT_DELAY_MS = 200
+_CLEAN_NEWS_INTER_CHANNEL = "briclite_clean_news"
+
 # Maps fader letters to GoXLR routing source names
 _FADER_TO_SOURCE = {
     "A": "Microphone",
@@ -56,7 +64,10 @@ _FADERS = [
 _ROUTING = {
     "Microphone": {"Headphones": True,  "BroadcastMix": True,  "Sampler": False, "LineOut": True,  "StreamMix2": False},
     "LineIn":     {"Headphones": True,  "BroadcastMix": True,  "Sampler": False, "LineOut": True,  "StreamMix2": False},
-    "Game":       {"Headphones": True,  "BroadcastMix": True,  "Sampler": False, "LineOut": True,  "StreamMix2": False},
+    # Game is deliberately excluded from BroadcastMix.  RX Right/news still
+    # reaches the local monitors through Fader C, while its clean pre-GoXLR
+    # copy is added to codec TX in PipelineController.
+    "Game":       {"Headphones": True,  "BroadcastMix": False, "Sampler": False, "LineOut": True,  "StreamMix2": False},
     "Chat":       {"Headphones": True,  "BroadcastMix": True,  "Sampler": False, "LineOut": True,  "StreamMix2": False},
     "Music":      {"Headphones": False, "BroadcastMix": False,  "Sampler": False, "LineOut": False, "StreamMix2": False},
     "Console":    {"Headphones": False, "BroadcastMix": False,  "Sampler": False, "LineOut": False, "StreamMix2": False},
@@ -97,6 +108,10 @@ _RX_MATRIX = (
     "<0.0,0.0>,<0.0,0.0>>"
 )
 
+# RX Right/news as dual mono, matching the existing Game mapping above.  This
+# is tapped immediately after AAC decode, before the GoXLR USB playback path.
+_CLEAN_NEWS_MATRIX = "<<0.0,1.0>,<0.0,1.0>>"
+
 # 2→10 matrix: Behringer stereo capture → GoXLR Chat (ch 4-5) only.
 # Rows = GoXLR output channel, Cols = Behringer input (L=0, R=1).
 _BEHRINGER_MATRIX = (
@@ -115,6 +130,13 @@ def _broadcast_extract_matrix(n_in: int) -> str:
     return f"<<{','.join(row0)}>,<{','.join(row1)}>>"
 
 
+def _capture_pair_extract_matrix(n_in: int, left: int, right: int) -> str:
+    """Matrix selecting one stereo pair from GoXLR's multichannel capture."""
+    row0 = ["1.0" if i == left else "0.0" for i in range(n_in)]
+    row1 = ["1.0" if i == right else "0.0" for i in range(n_in)]
+    return f"<<{','.join(row0)}>,<{','.join(row1)}>>"
+
+
 class GoXLRInterface(AudioInterface):
 
     def __init__(self, config: dict, studio_pfl: bool = False,
@@ -122,6 +144,7 @@ class GoXLRInterface(AudioInterface):
                  on_pfl_changed: Optional[Callable[[bool, Optional[int]], None]] = None,
                  restored_fader_volumes: Optional[dict[str, int]] = None,
                  on_fader_volume_changed: Optional[Callable[[str, int], None]] = None,
+                 on_fader_mute_changed: Optional[Callable[[str, bool], None]] = None,
                  on_volume_changed: Optional[Callable[[str, int], None]] = None):
         self._serial: str | None = None
         self._studio_pfl = studio_pfl
@@ -141,10 +164,22 @@ class GoXLRInterface(AudioInterface):
         }
         self._pickup_ignore_until = 0.0
         self._on_fader_volume_changed = on_fader_volume_changed
+        self._on_fader_mute_changed = on_fader_mute_changed
         self._on_volume_changed = on_volume_changed
         self._monitor_routing: dict[tuple[str, str], bool] = {}
+        goxlr_cfg = config.get("goxlr", {})
+        clean_cfg = goxlr_cfg.get("clean_news_return", {})
+        if not isinstance(clean_cfg, dict):
+            clean_cfg = {}
+        # Enable by default on the real Linux GoXLR.  The macOS two-channel
+        # virtual-device trial remains unchanged unless explicitly enabled.
+        self._clean_news_return = bool(clean_cfg.get("enabled", not _IS_MACOS))
+        delay_ms = clean_cfg.get("alignment_delay_ms", _DEFAULT_CLEAN_NEWS_ALIGNMENT_DELAY_MS)
+        self._clean_news_delay_ms = max(0, min(2000, delay_ms if isinstance(delay_ms, int) else _DEFAULT_CLEAN_NEWS_ALIGNMENT_DELAY_MS))
+        self._game_level = self._restored_fader_volumes.get("Game", 255)
+        self._game_muted = False
+        self._timing_probe = bool(clean_cfg.get("timing_probe", False))
         if _IS_MACOS:
-            goxlr_cfg = config.get("goxlr", {})
             self._mac_tx_device: str = goxlr_cfg.get("mac_tx_device", "")
             self._mac_rx_device: str = goxlr_cfg.get("mac_rx_device", "")
             self._mac_behringer_device: str = goxlr_cfg.get("mac_behringer_device", "")
@@ -242,9 +277,46 @@ class GoXLRInterface(AudioInterface):
                 f'audiomixmatrix in-channels={n} out-channels=2 matrix="{matrix}" ! '
                 f'audioconvert ! audio/x-raw,rate=48000,channels=2'
             )
+        if not self._clean_news_return:
+            return (
+                "alsasrc device=goxlr_broadcast ! audioconvert ! "
+                "audio/x-raw,rate=48000,channels=2"
+            )
+        delay_ns = self._clean_news_delay_ms * 1_000_000
+        if self._timing_probe:
+            # Test-only: use a single 21-channel GoXLR capture handle for both
+            # normal TX base audio and the headphone pair (10/11, confirmed by
+            # the duplex Game-tone capture). A second ALSA capture handle is
+            # not possible while codec TX is active.
+            broadcast = _broadcast_extract_matrix(21)
+            headphones = _capture_pair_extract_matrix(21, 10, 11)
+            hardware_branch = (
+                "alsasrc device=hw:GoXLRMini,0 ! "
+                "audio/x-raw,format=S32LE,layout=interleaved,rate=48000,channels=21 ! "
+                "tee name=goxlr_capture "
+                f'goxlr_capture. ! queue ! audiomixmatrix in-channels=21 out-channels=2 matrix="{broadcast}" ! '
+                "audioconvert ! audio/x-raw,format=S32LE,layout=interleaved,rate=48000,channels=2 ! tx_program_mix. "
+                f'goxlr_capture. ! queue leaky=downstream max-size-time=1000000000 ! audiomixmatrix in-channels=21 out-channels=2 matrix="{headphones}" ! '
+                "audioconvert ! audio/x-raw,format=S32LE,layout=interleaved,rate=48000,channels=2 ! "
+                "appsink name=headphone_timing_probe emit-signals=true sync=false max-buffers=32 drop=true "
+            )
+        else:
+            hardware_branch = (
+                "alsasrc device=goxlr_broadcast ! audioconvert ! audioresample ! "
+                "audio/x-raw,format=S32LE,layout=interleaved,rate=48000,channels=2 ! tx_program_mix. "
+            )
+        # interaudiosrc presents a timestamped live source to TX. Unlike the
+        # failed direct appsrc bridge, it owns the cross-pipeline buffering and
+        # latency reporting required by audiomixer's aggregator.
         return (
-            "alsasrc device=goxlr_broadcast ! audioconvert ! "
-            "audio/x-raw,rate=48000,channels=2"
+            f"{hardware_branch}"
+            f"interaudiosrc channel={_CLEAN_NEWS_INTER_CHANNEL} latency-time=200000000 buffer-time=1000000000 ! "
+            "audioconvert ! audioresample ! "
+            "audio/x-raw,format=S32LE,layout=interleaved,rate=48000,channels=2 ! "
+            f"identity name=clean_news_delay ts-offset={delay_ns} ! "
+            "volume name=clean_news_return_gain volume=1.0 ! audioconvert ! "
+            "audio/x-raw,format=S32LE,layout=interleaved,rate=48000,channels=2 ! tx_program_mix. "
+            f"audiomixer name=tx_program_mix {_GOXLR_MIX_PROPS}"
         )
 
     def rx_sample_rate(self) -> int:
@@ -308,6 +380,21 @@ class GoXLRInterface(AudioInterface):
             f'goxlr_mix.'
         ]
 
+    def clean_news_return_enabled(self) -> bool:
+        return self._clean_news_return
+
+    def clean_news_sink_bin(self) -> str:
+        """Timed in-process handoff for clean RX Right, before GoXLR playback."""
+        return (
+            f"interaudiosink name=clean_news_inter_sink channel={_CLEAN_NEWS_INTER_CHANNEL} sync=false"
+        )
+
+    def clean_news_return_level(self) -> int:
+        return self._game_level
+
+    def clean_news_return_muted(self) -> bool:
+        return self._game_muted
+
     def start(self) -> None:
         # Reset the "last pushed to hardware" routing cache so it gets fully
         # reapplied below — but NOT self._studio_pfl / self._studio_saved_volume.
@@ -332,6 +419,13 @@ class GoXLRInterface(AudioInterface):
             return
         status = self._ipc({"GetStatus": None})
         self._serial = next(iter(status["Status"]["mixers"]))
+        mixer = next(iter(status["Status"]["mixers"].values()))
+        levels = mixer.get("levels", {}).get("volumes", {})
+        if isinstance(levels.get("Game"), int):
+            self._game_level = levels["Game"]
+        fader_status = mixer.get("fader_status", {}).get("C", {})
+        mute_state = fader_status.get("mute_state")
+        self._game_muted = isinstance(mute_state, str) and mute_state != "Unmuted"
         logger.info(f"GoXLR Mini ready: serial={self._serial}")
         self._apply_faders()
         self._apply_fader_volumes()
@@ -372,10 +466,18 @@ class GoXLRInterface(AudioInterface):
         for _, channel in _FADERS:
             if channel in self._restored_fader_volumes:
                 self._cmd({"SetVolume": [channel, self._restored_fader_volumes[channel]]})
+        if "Game" in self._restored_fader_volumes:
+            self._game_level = self._restored_fader_volumes["Game"]
 
     def _apply_routing(self) -> None:
         for source, outputs in _ROUTING.items():
             for output, enabled in outputs.items():
+                # The opt-out remains a genuine rollback switch: when the
+                # PSA-side clean branch is disabled, restore the historical
+                # Game-to-BroadcastMix routing rather than silently losing
+                # news from TX.
+                if source == "Game" and output == "BroadcastMix" and not self._clean_news_return:
+                    enabled = True
                 self._cmd({"SetRouter": [source, output, enabled]})
 
     def _apply_mute_functions(self) -> None:
@@ -502,12 +604,28 @@ class GoXLRInterface(AudioInterface):
                         and isinstance(value, int) and 0 <= value <= 255):
                     if self._on_fader_volume_changed is not None:
                         self._on_fader_volume_changed(channel, value)
+                    if channel == "Game":
+                        self._game_level = value
                     if (fader in self._pending_pickup_faders
                             and time.monotonic() >= self._pickup_ignore_until):
                         self._pending_pickup_faders.remove(fader)
                         await asyncio.to_thread(self._set_fader_colour, fader)
                         logger.info("Fader %s physically picked up after recovery", fader)
                     break
+            if path.endswith("/fader_status/C/mute_state"):
+                muted = value != "Unmuted"
+                self._game_muted = muted
+                if self._on_fader_mute_changed is not None:
+                    self._on_fader_mute_changed("Game", muted)
+                continue
+            # The immediate button-down patch arrives before mute_state.  It
+            # makes the clean TX path respond at the same instant as Fader C;
+            # the authoritative mute_state patch above corrects it on release.
+            if path.endswith("/button_down/Fader3Mute") and value is True:
+                self._game_muted = not self._game_muted
+                if self._on_fader_mute_changed is not None:
+                    self._on_fader_mute_changed("Game", self._game_muted)
+                continue
             if "/button_down/Bleep" not in path or patch.get("value") is not True:
                 continue
             self._studio_pfl = not self._studio_pfl

@@ -29,6 +29,27 @@ class AudioInterface(ABC):
         audiomixer element (e.g. 'goxlr_mix.') defined in rx_sink_bin()."""
         return []
 
+    def clean_news_return_enabled(self) -> bool:
+        """Whether TX has a PSA-side clean-news branch.
+
+        The default keeps conventional interfaces entirely unchanged.  The
+        GoXLR implementation uses this to keep an RX-right/news signal out of
+        the GoXLR Broadcast Mix and add its pre-playback copy at the PSA.
+        """
+        return False
+
+    def clean_news_return_level(self) -> int:
+        """Current Fader-C-equivalent level (0--255) for the clean TX branch."""
+        return 255
+
+    def clean_news_return_muted(self) -> bool:
+        """Current Fader-C-equivalent mute state for the clean TX branch."""
+        return False
+
+    def clean_news_sink_bin(self) -> str:
+        """Hardware/virtual sink for the clean RX-right branch when enabled."""
+        raise NotImplementedError("clean news return is not enabled for this interface")
+
     def start(self) -> None:
         """Called when the codec pipeline is starting."""
 

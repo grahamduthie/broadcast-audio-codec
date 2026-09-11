@@ -50,6 +50,14 @@ def _persist_goxlr_fader_volume(channel: str, level: int) -> None:
     volumes[channel] = level
     desired["goxlr_fader_volumes"] = volumes
     desired_state.save(desired)
+    if channel == "Game" and controller is not None:
+        controller.set_clean_news_return_level(level)
+
+
+def _sync_goxlr_fader_mute(channel: str, muted: bool) -> None:
+    """Keep the PSA clean-news return branch in lockstep with Fader C mute."""
+    if channel == "Game" and controller is not None:
+        controller.set_clean_news_return_muted(muted)
 
 
 def _persist_goxlr_monitor_volume(channel: str, level: int) -> None:
@@ -85,6 +93,7 @@ def _make_interface(cfg: dict) -> AudioInterface:
         "on_pfl_changed": _persist_pfl_state,
         "restored_fader_volumes": desired.get("goxlr_fader_volumes"),
         "on_fader_volume_changed": _persist_goxlr_fader_volume,
+        "on_fader_mute_changed": _sync_goxlr_fader_mute,
         "on_volume_changed": _persist_goxlr_monitor_volume,
     }
     kind = cfg.get("system", {}).get("audio_interface", "auto")

@@ -62,13 +62,15 @@ Each pair is a stereo input that appears on the GoXLR's internal routing matrix 
 
 | ALSA channels | GoXLR output | Notes |
 |---|---|---|
-| 0–1 | **Broadcast Mix** | The stream-ready mix (Stream Mix A). **Use this for codec TX.** |
+| 0–1 | **Broadcast Mix** | The hardware mix used as the base of codec TX. In clean-news mode it excludes Game, which the PSA adds separately. |
 | 2–3 | Chat Mic | Processed mic signal (gate, comp, EQ applied) |
 | 4–15 | Mixed outputs | Headphone mix and other monitoring buses |
 | 16–17 | Sample Input | Sampler input |
 | 18–20 | Additional | Firmware-dependent |
 
-**Key fact:** Channels 0–1 of capture are the Broadcast Mix — the output of whatever the operator has configured as their broadcast-ready mix. This is the correct source for the codec TX path.
+**Key fact:** Channels 0–1 of capture are the Broadcast Mix. Normally this is
+the codec TX source; in clean-news mode it is the base source and the PSA
+adds the decoded RX-right signal before encoding.
 
 ### GStreamer caps (confirmed on PSA300)
 
@@ -115,7 +117,7 @@ The PSA300 writes two independent audio sources into the GoXLR's 10-channel USB 
 | ALSA ch | GoXLR bus | Source | Fader | Routing |
 |---|---|---|---|---|
 | 0–1 | System | — | — | unused |
-| 2–3 | Game | Codec RX Right (News feed) | C | BroadcastMix, LineOut, Headphones |
+| 2–3 | Game | Codec RX Right (News feed) | C | LineOut, Headphones; clean PSA branch for TX |
 | 4–5 | Chat | Behringer capture (Guest mic) | B | BroadcastMix, LineOut, Headphones |
 | 6–7 | Music | Codec RX Left (Studio return) | — | none (PFL-only via Bleep button) |
 | 8–9 | Sample | — | — | unused |
@@ -370,11 +372,33 @@ Config key `system.audio_interface` accepts `"auto"` (default), `"goxlr"`, or `"
 |---|---|---|---|---|---|---|
 | A | Mic | Main microphone (XLR) | ✓ | ✓ | ✓ | |
 | B | Chat | Guest microphone (Behringer `hw:CODEC,0`) | ✓ | ✓ | ✓ | USB capture from Behringer |
-| C | Game | News feed (codec RX Right) | ✓ | ✓ | ✓ | |
+| C | Game | News feed (codec RX Right) | PSA clean branch | ✓ | ✓ | GoXLR copy is monitor-only |
 | D | LineIn | Music player (GoXLR 3.5mm line in) | ✓ | ✓ | ✓ | |
 | — | Music | Studio return (codec RX Left) | — | PFL only | PFL only | No fader; Bleep PFL only |
 
 The studio return is on the Music bus with no fader assigned. It is absent from both monitor outputs during normal operation and is never routed to BroadcastMix; Bleep/PFL solos it to Headphones and Line Out together.
+
+### Clean news return mix (implemented 2026-09-11)
+
+The Linux GoXLR path now deliberately routes `Game` to local `Headphones` and
+`LineOut`, but **not** to the GoXLR `BroadcastMix`. `PipelineController` taps
+RX Right immediately after AAC decode, before the GoXLR USB playback path,
+and hands that dual-mono clean copy to an `interaudiosink`. A paired,
+timestamped `interaudiosrc` feeds the PSA TX `audiomixer` alongside the
+Game-excluded GoXLR BroadcastMix before AAC/RTP TX. This is deliberately not a
+direct `appsrc` bridge or ALSA loopback: both introduced their own underflow or
+aggregator stalls. Thus a GoXLR playback dropout remains audible locally but
+cannot be encoded into the return feed.
+
+Fader C/Game volume and mute WebSocket events also drive the PSA-side `volume`
+element, so the physical fader and mute button retain control of both the
+local monitor copy and the clean return copy. The default delay on the clean
+branch is 200 ms (`goxlr.clean_news_return.alignment_delay_ms`), matching the
+inter-pipeline source latency. It is a starting calibration, not a universal
+constant: make a tone/transient test at the remote end and adjust it in the
+range 0--2000 ms before relying on the path on air. Set
+`goxlr.clean_news_return.enabled` to `false` to roll back to the historical
+all-GoXLR BroadcastMix path.
 
 ### Mute buttons
 

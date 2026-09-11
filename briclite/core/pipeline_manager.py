@@ -24,6 +24,7 @@ _MATRIX_STRINGS = {
     "left":   "<<1.0,0.0>,<1.0,0.0>>",
     "right":  "<<0.0,1.0>,<0.0,1.0>>",
 }
+_CLEAN_NEWS_MATRIX = "<<0.0,1.0>,<0.0,1.0>>"  # RX Right as dual-mono news
 _RTP_CLOCK = 90000
 _AAC_SAMP  = 24000
 _AAC_FRAME = 1024
@@ -196,6 +197,9 @@ class PipelineController:
         self.tx_pipeline = None
         self.rx_pipeline = None
         self.rx_appsrc   = None
+        self._clean_news_return_level = 255
+        self._clean_news_return_muted = False
+        self._headphone_timing_probe_file = None
         self.sock        = None
         self.glib_loop   = GLib.MainLoop()
         self.last_rx_packet = 0.0
@@ -216,17 +220,34 @@ class PipelineController:
         matrix = _MATRIX_STRINGS.get(mode, _MATRIX_STRINGS["stereo"])
         rx_rate = self.interface.rx_sample_rate()
         self.rx_extra_sources_active = bool(self.interface.extra_rx_source_bins())
-        rx_str = (
+        decoded = (
             f"appsrc name=rx_src is-live=true format=time block=false ! "
             f"queue max-size-buffers={_RX_QUEUE_BUFFERS} max-size-bytes=0 max-size-time=0 ! "
             f"audio/mpeg,mpegversion=4,stream-format=adts ! "
-            f"avdec_aac ! audioconvert ! "
-            f'audiomixmatrix name=rx_router in-channels=2 out-channels=2 matrix="{matrix}" ! '
+            f"avdec_aac ! audioconvert"
+        )
+        monitor = (
+            f' ! audiomixmatrix name=rx_router in-channels=2 out-channels=2 matrix="{matrix}" ! '
             f"level name=rx_meter ! audioresample ! "
             f"audio/x-raw,rate={rx_rate},channels=2 ! "
             f"volume name=rx_vol volume={self.rx_volume_pct / 100.0} ! "
             f"{self.interface.rx_sink_bin()}"
         )
+        if self.interface.clean_news_return_enabled():
+            # Do not let a slow/failed inter-pipeline handoff back-pressure local RX audio.
+            # The tap is before rx_router so changing the monitor channel mode
+            # cannot accidentally change which remote feed returns as news.
+            rx_str = (
+                f"{decoded} ! tee name=decoded_rx "
+                f"decoded_rx. ! queue{monitor} "
+                f"decoded_rx. ! queue leaky=downstream max-size-time=500000000 "
+                f"max-size-bytes=0 max-size-buffers=0 ! "
+                f'audiomixmatrix in-channels=2 out-channels=2 matrix="{_CLEAN_NEWS_MATRIX}" ! '
+                f"audioresample ! audio/x-raw,format=S32LE,layout=interleaved,rate=48000,channels=2 ! "
+                f"{self.interface.clean_news_sink_bin()}"
+            )
+        else:
+            rx_str = f"{decoded}{monitor}"
         for extra in self.interface.extra_rx_source_bins():
             rx_str += f" {extra}"
         logger.info(f"RX ({mode}): {rx_str}")
@@ -250,6 +271,12 @@ class PipelineController:
         silent output stall (e.g. audiomixer wedging) that RX network health
         alone wouldn't reveal."""
         for sink in pipeline.iterate_sinks():
+            # The inter branch is a clean-news TX handoff, not local
+            # monitoring. It must not mask a GoXLR monitor-sink stall.
+            if sink.get_name() == "clean_news_inter_sink":
+                continue
+            if sink.get_name() == "headphone_timing_probe":
+                continue
             pad = sink.get_static_pad("sink")
             if pad:
                 pad.add_probe(Gst.PadProbeType.BUFFER, self._on_rx_sink_buffer)
@@ -276,6 +303,10 @@ class PipelineController:
         logger.info(f"TX: {tx_str}")
         self.tx_pipeline = Gst.parse_launch(tx_str)
         self.tx_pipeline.get_by_name("tx_sink").connect("new-sample", self._on_tx_sample)
+        headphone_probe = self.tx_pipeline.get_by_name("headphone_timing_probe")
+        if headphone_probe:
+            self._headphone_timing_probe_file = open("/tmp/briclite-headphone-timing.raw", "wb")
+            headphone_probe.connect("new-sample", self._on_headphone_timing_sample)
         bus = self.tx_pipeline.get_bus()
         bus.add_signal_watch()
         bus.connect("message", self._on_bus_message)
@@ -293,6 +324,8 @@ class PipelineController:
         self.sock.bind(("0.0.0.0", self.rx_port))
 
         self.interface.start()
+        self.set_clean_news_return_level(self.interface.clean_news_return_level())
+        self.set_clean_news_return_muted(self.interface.clean_news_return_muted())
         self.last_rx_packet = time.monotonic()
         self._last_rx_sink_buffer = time.monotonic()
         self._last_rx_sink_buffer_seen = None
@@ -327,6 +360,9 @@ class PipelineController:
         self.rx_pipeline.get_state(Gst.SECOND)
         self.glib_loop.quit()
         self.interface.stop()
+        if self._headphone_timing_probe_file:
+            self._headphone_timing_probe_file.close()
+            self._headphone_timing_probe_file = None
         self.jitter_buf.reset()
         if self.sock:
             try:
@@ -348,6 +384,21 @@ class PipelineController:
         vol = self.rx_pipeline.get_by_name("rx_vol")
         if vol:
             vol.set_property("volume", self.rx_volume_pct / 100.0)
+
+    def set_clean_news_return_level(self, level: int) -> None:
+        """Mirror GoXLR Fader C onto the PSA-side, clean news TX path."""
+        gain = max(0, min(255, level)) / 255.0
+        volume = self.tx_pipeline.get_by_name("clean_news_return_gain")
+        if volume:
+            volume.set_property("volume", 0.0 if self._clean_news_return_muted else gain)
+        self._clean_news_return_level = max(0, min(255, level))
+
+    def set_clean_news_return_muted(self, muted: bool) -> None:
+        self._clean_news_return_muted = bool(muted)
+        volume = self.tx_pipeline.get_by_name("clean_news_return_gain")
+        if volume:
+            gain = self._clean_news_return_level / 255.0
+            volume.set_property("volume", 0.0 if self._clean_news_return_muted else gain)
 
     def set_rx_channel_mode(self, mode: str):
         self.rx_channel_mode = mode
@@ -405,6 +456,14 @@ class PipelineController:
         self.rtp_seq += 1
         self.rtp_ts  = (self.rtp_ts + _TS_INC) & 0xFFFFFFFF
         return Gst.FlowReturn.OK
+
+    def _on_headphone_timing_sample(self, appsink):
+        sample = appsink.emit("pull-sample")
+        if sample and self._headphone_timing_probe_file:
+            buf = sample.get_buffer()
+            self._headphone_timing_probe_file.write(buf.extract_dup(0, buf.get_size()))
+        return Gst.FlowReturn.OK
+
 
     def _rx_loop(self):
         last_seq = None

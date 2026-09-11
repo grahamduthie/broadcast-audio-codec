@@ -356,7 +356,7 @@ goxlr_mix.
 |---|---|---|---|
 | A | Mic | Main microphone (XLR) | ✓ |
 | B | Chat | Guest mic (Behringer `hw:CODEC,0`) | ✓ |
-| C | Game | News feed (codec RX Right) | ✓ |
+| C | Game | News feed (codec RX Right) | PSA clean branch (not GoXLR BroadcastMix) |
 | D | LineIn | Music player (GoXLR line in) | ✓ |
 | — | Music | Studio return (codec RX Left) | — |
 
