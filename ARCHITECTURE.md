@@ -325,7 +325,14 @@ Used when a GoXLR Mini is present. On `start()`:
 
 **This `start()` is the only source of truth for GoXLR config — not any saved `.goxlr` profile file (discovered 2026-09-09).** It runs from `PipelineController.start()` (`core/pipeline_manager.py:196`). An ordinary inactive Briclite start still does not alter the physical GoXLR. However, an operator-requested active link is now persisted outside the process in `/var/lib/briclite/desired-link.json`; on a Briclite restart its lifespan recreates that pipeline automatically, so `start()` reapplies the documented routing, faders and colours. An explicit `/api/disconnect` removes that state and prevents an automatic reconnection. Before a restored link starts, the GoXLR daemon can still display its on-disk `Default` profile, which has a different fader mapping and Music at volume 0; that brief pre-start state is expected. Verify the live state with `goxlr-client --status-json`.
 
-**TX:** `alsasrc device=goxlr_broadcast ! audioconvert ! audio/x-raw,rate=48000,channels=2`
+**TX:** With `goxlr.clean_news_return.enabled`, the hardware
+`goxlr_broadcast` capture is the base mix with Game/Fader C deliberately
+excluded. A timestamped, pre-GoXLR RX-Right copy crosses the in-process
+`interaudiosink`/`interaudiosrc` handoff and joins that base in the PSA TX
+`audiomixer`; its gain and mute follow Fader C. This prevents GoXLR playback
+dropouts from reaching RTP TX while preserving the local Game monitor. With
+the option disabled, TX is the historical
+`alsasrc device=goxlr_broadcast ! audioconvert ! audio/x-raw,rate=48000,channels=2`.
 
 **RX — two-source pipeline:** The ALSA `route` plugin cannot reliably expand 2 channels to the GoXLR's 10-channel playback stream (silent failure; S32LE-only device, broken ALSA constraint propagation). Instead, GStreamer's `audiomixmatrix` maps each source to its assigned GoXLR channels, and `audiomixer` combines them before writing to `hw:GoXLRMini,0` — **but only when there actually is a second source to combine:**
 

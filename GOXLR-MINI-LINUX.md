@@ -392,13 +392,36 @@ cannot be encoded into the return feed.
 
 Fader C/Game volume and mute WebSocket events also drive the PSA-side `volume`
 element, so the physical fader and mute button retain control of both the
-local monitor copy and the clean return copy. The default delay on the clean
-branch is 200 ms (`goxlr.clean_news_return.alignment_delay_ms`), matching the
-inter-pipeline source latency. It is a starting calibration, not a universal
-constant: make a tone/transient test at the remote end and adjust it in the
-range 0--2000 ms before relying on the path on air. Set
+local monitor copy and the clean return copy. The clean branch has a fixed
+`interaudiosrc` 200 ms latency plus the timestamp offset configured by
+`goxlr.clean_news_return.alignment_delay_ms` (200 ms on PSA300).  On PSA300, an 801 Hz
+intermittent-tone test against the known GoXLR headphone capture pair measured
+the returned mix at -1 to +4 ms relative to the local headphone timing, so
+the deployed 200 ms value is aligned. Re-measure after material changes to
+the hardware/pipeline; the supported configuration range is 0--2000 ms. Set
 `goxlr.clean_news_return.enabled` to `false` to roll back to the historical
 all-GoXLR BroadcastMix path.
+
+### Clean-return validation and diagnostic mode
+
+The pre-change outgoing RTP capture had exact zero gaps approximately
+100--123 ms long. A 34.86-second outgoing capture from the final inter-audio
+design had no exact-zero interval of 20 ms or longer. This confirms that the
+GoXLR playback glitches are not entering the encoded return, while they may
+still be heard locally.
+
+`goxlr.clean_news_return.timing_probe` is an opt-in, test-only facility. It
+replaces the normal base capture with one 21-channel GoXLR capture handle,
+extracts both Broadcast Mix and the confirmed Headphones channel pair 10/11,
+and writes the latter as S32 raw audio to
+`/tmp/briclite-headphone-timing.raw`. Leave it `false` in service. It exists
+only to correlate a controlled tone with an outgoing RTP capture.
+
+Do not substitute the earlier experimental handoffs: direct `appsrc` into the
+TX mixer produced recurring roughly 400 ms silences; ALSA `snd-aloop` paths
+underflowed or created periodic silent sections; and an `adder` variant did
+not negotiate on PSA300. The timestamped inter-audio handoff is the accepted
+implementation.
 
 ### Mute buttons
 
@@ -436,7 +459,9 @@ In GoXLR mode, `POST /api/rx_volume` with `{"pct": 0–100}` calls `SetVolume ["
 
 ### `tx_source_bin()`
 ```python
-return "alsasrc device=goxlr_broadcast ! audioconvert ! audio/x-raw,rate=48000,channels=2"
+# Clean mode: hardware Broadcast Mix (Game excluded) plus the timestamped
+# pre-playback RX-Right branch into tx_program_mix/audiomixer.
+# Disabled clean mode: historical goxlr_broadcast ALSA source only.
 ```
 
 ### `rx_sink_bin()` and `extra_rx_source_bins()`

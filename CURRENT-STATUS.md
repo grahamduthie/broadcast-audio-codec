@@ -2,6 +2,98 @@
 
 This is the handoff document for the live residual RX-audio glitch investigation, started 2026-09-09. Read this before resuming tests on the PSA300 — start with the most recent dated section below and work backward; older sections are historical record. For the full technical deep-dive specifically on the USB/audio glitch (not the overnight-flood or bug-fixing threads), see `USB-AUDIO-GLITCH.md`.
 
+## Update — 2026-09-11: clean news return mix deployed and timing-validated
+
+The PSA300 is running the clean-news workaround.  Local commit `1761eba`
+(`Route clean news return around GoXLR playback`) is deployed in the PSA
+working tree as part of PSA commit `2a0a895`.  Its live configuration is
+`goxlr.clean_news_return.enabled=true`,
+`alignment_delay_ms=200`, and `timing_probe=false`.
+
+The intentionally asymmetric signal path is:
+
+```
+RX Right/news decode ──> GoXLR Game ──> headphones + Line Out (may glitch)
+                    └─> interaudiosink/src ──> TX audiomixer ──> RTP return
+GoXLR Broadcast Mix, with Game excluded ────────────────────────┘
+```
+
+Therefore Fader C/Game remains the local news monitor and can still suffer
+the known GoXLR USB-playback dropout, but the return encoder receives the
+pre-playback PSA copy.  Game is deliberately excluded from the hardware
+Broadcast Mix.  Fader C volume and mute WebSocket events are mirrored onto
+the PSA-side clean branch; Fader D/Line In and the other broadcast sources
+remain in the hardware Broadcast Mix.
+
+### Evidence and alignment
+
+- Before the workaround, a 51.75-second outgoing RTP capture contained exact
+  zero gaps of approximately 100--123 ms (for example at 9.14, 14.81, 22.59,
+  and 29.22 seconds), matching the audible GoXLR glitches.
+- The final `interaudiosink`/`interaudiosrc` implementation produced a
+  34.86-second outgoing capture with no exact-zero run of 20 ms or longer.
+- With intermittent 801 Hz news tone on C and local music on D, a timing-probe
+  capture correlated the known GoXLR headphone pair (USB capture channels
+  10/11) with the outgoing RTP return.  Ten-second matched windows measured
+  return-versus-headphone offsets from -1 ms to +4 ms: for practical purposes
+  the 200 ms setting is aligned.
+
+`timing_probe` is a temporary diagnostic mode, not normal operation.  When
+enabled it captures channels 10/11 to `/tmp/briclite-headphone-timing.raw`
+while using one 21-channel GoXLR capture handle for both the base mix and the
+probe.  Leave it disabled unless repeating a controlled alignment test.
+
+Do not reinstate either abandoned design: the direct `appsrc` into the TX
+`audiomixer` eventually produced recurring roughly 400 ms silences, and
+`snd-aloop` alternatives produced underflow/periodic silent sections.  An
+`adder` variant also failed GStreamer negotiation on the PSA.  The timestamped
+inter-audio handoff is the working design.
+
+For an emergency rollback, set `clean_news_return.enabled` to `false` and
+restart the active codec pipeline/service; this restores Game to the hardware
+Broadcast Mix and returns to the historical all-GoXLR TX path.
+
+### 11:00 news recording
+
+The requested outgoing-return recording is available locally at
+`recordings/news-return-2026-09-11-105907-110300.wav`, with its source capture
+at `recordings/news-return-2026-09-11-105907-110317.pcap`.  It contains actual
+PSA-originated RTP (172.16.10.213 to UDP/5004), then AAC-decoded audio.  The
+capture began at 10:59:07 BST (seven seconds after the requested 10:59 start)
+and the WAV was trimmed to exactly 11:03; 11,712 packets were captured with
+zero kernel drops.  These recordings are handoff artefacts and intentionally
+remain untracked rather than repository content.
+
+## Update — 2026-09-11: Broadcast-monitor laptop screen blanking fixed at the Xfce layer
+
+This is separate from the PSA300 audio investigation, but is important for
+operators and future agents because the Briclite web GUI is monitored on the
+Lenovo laptop `broadcast-T400` (`ssh broadcast@172.16.10.212`).
+
+The display blanking was not GNOME/Cinnamon, hardware, a lost video signal,
+or system suspend. It was the X11 screen saver, controlled by
+`xfce4-power-manager`. The X server's default was a 600-second timeout. An
+initial `xset`/autostart-only fix was incomplete: the power manager's
+`blank-on-ac` and `blank-on-battery` properties were unset, so it retained its
+built-in ten-minute default and later reapplied it to the live X server.
+
+The durable settings now saved for user `broadcast` are:
+
+- `/xfce4-power-manager/blank-on-ac = 0`
+- `/xfce4-power-manager/blank-on-battery = 0`
+- `/xfce4-power-manager/dpms-enabled = false`
+
+They persist in
+`/home/broadcast/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-power-manager.xml`.
+The additional login-time X11 guard remains
+`/home/broadcast/.config/autostart/disable-screensaver.desktop`.
+
+At the final live check (09:41 BST), `xset q` showed screen-saver `timeout: 0`
+and `DPMS is Disabled`. For the detailed evidence, exact recovery commands,
+and the reboot/startup-race behaviour, see `TROUBLESHOOTING.md` under
+**Broadcast monitor laptop**. If blanking returns, inspect the live X11 state
+before changing anything, then check these three Xfce settings first.
+
 ## Update — 2026-09-11: durable GoXLR fader recovery and pickup indication
 
 Following the unattended-update recovery work, Graham reported a real desk
