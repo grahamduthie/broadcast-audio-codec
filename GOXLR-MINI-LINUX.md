@@ -391,14 +391,18 @@ Config key `system.audio_interface` accepts `"auto"` (default), `"goxlr"`, or `"
 | Fader | GoXLR ch | Source | BroadcastMix | LineOut | Headphones | Notes |
 |---|---|---|---|---|---|---|
 | A | Mic | Main microphone (XLR) | ✓ | ✓ | ✓ | |
-| B | Chat | Guest microphone (Behringer `hw:CODEC,0`) | ✓ | ✓ | ✓ | USB capture from Behringer |
+| B | LineIn | Guest microphone (Behringer analogue out) | ✓ | ✓ | ✓ | Moved from Chat (USB) 2026-09-13 — see below |
 | C | Game | News feed (codec RX Right) | PSA clean branch | ✓ | ✓ | GoXLR copy is monitor-only |
 | D | Console | Music player (GoXLR optical in) | ✓ | ✓ | ✓ | Moved from LineIn (3.5mm) 2026-09-13 — see below |
 | — | Music | Studio return (codec RX Left) | — | PFL only | PFL only | No fader; Bleep PFL only |
 
 The studio return is on the Music bus with no fader assigned. It is absent from both monitor outputs during normal operation and is never routed to BroadcastMix; Bleep/PFL solos it to Headphones and Line Out together.
 
-**Fader D moved from LineIn to Console (2026-09-13):** the music player now feeds the GoXLR digitally over optical instead of the analogue 3.5mm line input, freeing the Line In jack for another purpose. `LineIn` in `_ROUTING` is left inert (no fader, no routing to any output) rather than removed, so nothing plugged into the 3.5mm jack can bleed into the mix uncontrolled. Confirmed working live on the PSA300; see `_FADER_TO_SOURCE`/`_ROUTING` in `briclite/interfaces/goxlr.py`.
+**Fader D moved from LineIn to Console (2026-09-13):** the music player now feeds the GoXLR digitally over optical instead of the analogue 3.5mm line input, freeing the Line In jack for another purpose. Confirmed working live on the PSA300; see `_FADER_TO_SOURCE`/`_ROUTING` in `briclite/interfaces/goxlr.py`.
+
+**Fader B moved from Chat to LineIn (2026-09-13):** the freed Line In jack now carries the Behringer's analogue output instead — the guest mic previously arrived via Behringer USB capture (`hw:CODEC,0`) into the GoXLR's Chat bus (`extra_rx_source_bins()`/the conditional `audiomixer` in §5), which was adding latency and was a suspected source of some of the audio glitching. `Chat` in `_ROUTING` is left inert (no fader, no routing to any output) rather than removed — if the Behringer's USB is still connected to the host, `behringer_available()` still detects it and the existing hotplug capture/mixer keeps running into the Chat bus, but it now goes nowhere audible. Unplugging the Behringer's USB from the host once the analogue Line In connection is confirmed would let the existing hotplug logic skip that pipeline branch entirely (see `behringer_available()` in §5/§10) — not done as part of this change, since it wasn't asked for.
+
+**Studio Monitor Cut (Cough button, §10) tracks fader B by channel name**, so it was updated from `("Mic", "Chat")` to `("Mic", "LineIn")` to keep protecting against feedback from the guest mic after this move — see `_mic_volumes` in `GoXLRInterface.__init__`/`start()` in `goxlr.py`. The fader-volume restore-across-restart whitelist in `briclite/main.py`'s `_persist_goxlr_fader_volume()` was also updated to `{"Mic", "LineIn", "Game", "Console"}` (it had missed adding `Console` when Fader D moved earlier the same day, a latent bug fixed at the same time).
 
 ### Clean news return mix (implemented 2026-09-11)
 
@@ -462,7 +466,7 @@ Implementation: `monitor_pfl()` subscribes to `ws://localhost:14564/api/websocke
 
 ### Cough button — Studio Monitor Cut (added 2026-09-13)
 
-The Cough button is repurposed as an **arm/disarm toggle** for a feedback-safety feature, the same pattern as Bleep/PFL: while armed, Line Out is muted whenever fader A (Mic) or B (Chat) is open, so speakers set up near the mics can't feed back. Headphones are untouched.
+The Cough button is repurposed as an **arm/disarm toggle** for a feedback-safety feature, the same pattern as Bleep/PFL: while armed, Line Out is muted whenever fader A (Mic) or B (LineIn) is open, so speakers set up near the mics can't feed back. Headphones are untouched.
 
 - **Press to arm:** Cough LED goes green (or straight to red if a mic is already open). Nothing changes yet if both mics are closed.
 - **A mic opens while armed:** `SetRouter` removes every source (A–D and, if PFL happens to be active, Music) from Line Out only. Cough LED goes red.

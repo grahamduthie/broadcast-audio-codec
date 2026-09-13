@@ -362,7 +362,7 @@ goxlr_mix.
 | Fader | Channel | Signal | BroadcastMix |
 |---|---|---|---|
 | A | Mic | Main microphone (XLR) | ✓ |
-| B | Chat | Guest mic (Behringer `hw:CODEC,0`) | ✓ |
+| B | LineIn | Guest mic (Behringer analogue out) | ✓ |
 | C | Game | News feed (codec RX Right) | PSA clean branch (not GoXLR BroadcastMix) |
 | D | Console | Music player (GoXLR optical in) | ✓ |
 | — | Music | Studio return (codec RX Left) | — |
@@ -380,7 +380,7 @@ IPC calls triggered by button events run in a thread pool (`asyncio.to_thread`) 
 
 **Cough button — Studio Monitor Cut (added 2026-09-13):**
 
-Cough is repurposed the same way Bleep is, as an arm/disarm toggle for a feedback-safety feature: while armed, Line Out is muted whenever fader A (Mic) or B (Chat) is open, and restored the instant both are closed. This guards against feedback when monitor speakers are set up near the mics. Headphones are never touched — the operator can always monitor normally.
+Cough is repurposed the same way Bleep is, as an arm/disarm toggle for a feedback-safety feature: while armed, Line Out is muted whenever fader A (Mic) or B (LineIn) is open, and restored the instant both are closed. This guards against feedback when monitor speakers are set up near the mics. Headphones are never touched — the operator can always monitor normally.
 
 - "Open" means the fader's logical volume reads above `_MIC_OPEN_THRESHOLD` (5/255) rather than a strict >0, because a fader resting at the bottom of its travel was observed reading a small nonzero value (1/255) rather than a clean 0; a strict threshold caused an immediate false cut on arming.
 - Implemented via `SetRouter`, not by overriding the `LineOut` master volume — the web UI's Speaker Volume slider already owns that value, so this avoids two features fighting over it. `_apply_monitor_routing()` computes one final desired state per (source, output) pair from both PFL and Studio Monitor Cut together, so they compose correctly rather than racing: Studio Monitor Cut always wins on Line Out (feedback safety over a PFL cue being audible on the room speakers), Headphones always follow PFL alone.

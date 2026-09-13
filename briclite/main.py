@@ -55,7 +55,10 @@ def _persist_monitor_cut_state(enabled: bool) -> None:
 def _persist_goxlr_fader_volume(channel: str, level: int) -> None:
     """Keep the GoXLR daemon's logical fader level across an outage."""
     desired = desired_state.load()
-    if not desired or channel not in {"Mic", "Chat", "Game", "LineIn"}:
+    # Must match the channels currently assigned to A/B/C/D in
+    # interfaces/goxlr.py's _FADER_TO_SOURCE (Mic/LineIn/Game/Console as of
+    # 2026-09-13) or a fader's volume silently won't survive a restart.
+    if not desired or channel not in {"Mic", "LineIn", "Game", "Console"}:
         return
     volumes = desired.get("goxlr_fader_volumes")
     if not isinstance(volumes, dict):

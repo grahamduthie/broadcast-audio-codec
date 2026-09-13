@@ -51,37 +51,41 @@ _CLEAN_NEWS_INTER_CHANNEL = "briclite_clean_news"
 
 # Maps fader letters to GoXLR routing source names
 # D moved from LineIn to Console (optical input) 2026-09-13: music now
-# arrives digitally from the PC over optical rather than analogue 3.5mm,
-# freeing the physical Line In jack for another purpose.
+# arrives digitally from the PC over optical rather than analogue 3.5mm.
+# B moved from Chat (Behringer USB capture) to LineIn (Behringer analogue
+# output) the same day: the software USB path was adding latency and was a
+# suspected glitch source, and the freed Line In jack now carries it instead.
 _FADER_TO_SOURCE = {
     "A": "Microphone",
-    "B": "Chat",       # Guest mic (Behringer)
+    "B": "LineIn",     # Guest mic (Behringer analogue out -> GoXLR line in)
     "C": "Game",       # News / Codec RX Right
     "D": "Console",    # Music Player / GoXLR optical input
 }
 
 _FADERS = [
     ("A", "Mic"),      # Main microphone (XLR)
-    ("B", "Chat"),     # Guest microphone (Behringer capture)
+    ("B", "LineIn"),   # Guest microphone (Behringer analogue output)
     ("C", "Game"),     # News feed (Codec RX Right)
     ("D", "Console"),  # Music Player (GoXLR optical input)
 ]
 
 # Full routing matrix applied on every start.
 # Music carries the studio return (codec RX Left) but has no fader — only
-# accessible via Bleep PFL. Chat is now the second mic (Behringer) and
-# goes to BroadcastMix so the operator can fade it into the broadcast.
+# accessible via Bleep PFL. LineIn is now the second mic (Behringer,
+# analogue) and goes to BroadcastMix so the operator can fade it in.
 _ROUTING = {
     "Microphone": {"Headphones": True,  "BroadcastMix": True,  "Sampler": False, "LineOut": True,  "StreamMix2": False},
-    # LineIn is unused since Fader D moved to Console (optical) 2026-09-13;
-    # left inert (no fader controls it) so it can't bleed into the mix
-    # uncontrolled if something is later plugged into the 3.5mm jack.
-    "LineIn":     {"Headphones": False, "BroadcastMix": False, "Sampler": False, "LineOut": False, "StreamMix2": False},
+    "LineIn":     {"Headphones": True,  "BroadcastMix": True,  "Sampler": False, "LineOut": True,  "StreamMix2": False},
     # Game is deliberately excluded from BroadcastMix.  RX Right/news still
     # reaches the local monitors through Fader C, while its clean pre-GoXLR
     # copy is added to codec TX in PipelineController.
     "Game":       {"Headphones": True,  "BroadcastMix": False, "Sampler": False, "LineOut": True,  "StreamMix2": False},
-    "Chat":       {"Headphones": True,  "BroadcastMix": True,  "Sampler": False, "LineOut": True,  "StreamMix2": False},
+    # Chat is unused since Fader B moved to LineIn (analogue) 2026-09-13; left
+    # inert (no fader controls it). If the Behringer's USB is still plugged
+    # into the host, extra_rx_source_bins()/rx_sink_bin() (see behringer_available())
+    # still captures it into this bus via a running audiomixer branch, but
+    # it goes nowhere audible/broadcast since every output here is False.
+    "Chat":       {"Headphones": False, "BroadcastMix": False, "Sampler": False, "LineOut": False, "StreamMix2": False},
     "Music":      {"Headphones": False, "BroadcastMix": False,  "Sampler": False, "LineOut": False, "StreamMix2": False},
     # Console (optical input): music player, Fader D. Carries the routing
     # LineIn used to have.
@@ -175,13 +179,15 @@ class GoXLRInterface(AudioInterface):
             if channel in valid_channels and isinstance(level, int) and 0 <= level <= 255
         }
         # Studio Monitor Cut: while armed, Line Out is silenced whenever
-        # either microphone (Mic/A or Chat/B) fader is open, to protect
-        # against feedback when speakers are near the mics.
+        # either microphone (Mic/A or LineIn/B) fader is open, to protect
+        # against feedback when speakers are near the mics. Tracks the
+        # channel names actually assigned to those two faders, so this must
+        # be kept in sync with _FADER_TO_SOURCE above.
         self._monitor_cut_enabled = monitor_cut_enabled
         self._on_monitor_cut_changed = on_monitor_cut_changed
         self._mic_volumes = {
             channel: self._restored_fader_volumes.get(channel, 0)
-            for channel in ("Mic", "Chat")
+            for channel in ("Mic", "LineIn")
         }
         # The GoXLR has non-motorised faders. Amber identifies controls whose
         # restored logical value may still need physical soft pickup.
@@ -449,7 +455,7 @@ class GoXLRInterface(AudioInterface):
         levels = mixer.get("levels", {}).get("volumes", {})
         if isinstance(levels.get("Game"), int):
             self._game_level = levels["Game"]
-        for channel in ("Mic", "Chat"):
+        for channel in ("Mic", "LineIn"):
             if isinstance(levels.get(channel), int):
                 self._mic_volumes[channel] = levels[channel]
         fader_status = mixer.get("fader_status", {}).get("C", {})

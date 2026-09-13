@@ -2,6 +2,16 @@
 
 This is the handoff document for the live residual RX-audio glitch investigation, started 2026-09-09. Read this before resuming tests on the PSA300 — start with the most recent dated section below and work backward; older sections are historical record. For the full technical deep-dive specifically on the USB/audio glitch (not the overnight-flood or bug-fixing threads), see `USB-AUDIO-GLITCH.md`.
 
+## Update — 2026-09-13: Fader B moved from Chat to LineIn (Behringer now analogue)
+
+Follow-on from the Fader D change directly below, same session. The Behringer's guest mic used to reach Fader B via USB capture (`hw:CODEC,0`) mixed into the GoXLR's Chat bus (`extra_rx_source_bins()`/the conditional `audiomixer` — see `GOXLR-MINI-LINUX.md` §5 and [[project-audio-glitch-investigation]]), which was adding noticeable latency and was a suspected source of some of the glitching. With Fader D freeing the physical Line In jack, the Behringer's analogue output now goes there instead, and Fader B was reassigned from `Chat` to `LineIn` in `_FADER_TO_SOURCE`/`_FADERS`/`_ROUTING`. `Chat` is left inert in `_ROUTING` (not removed) — if the Behringer's USB stays plugged into the host, `behringer_available()` still detects it and the existing hotplug capture/mixer keeps running into that bus, it just no longer reaches any output. Fully unplugging the Behringer's USB from the host would let the existing hotplug logic skip that pipeline branch — not done here, wasn't asked for.
+
+Two things elsewhere had to change to keep working correctly with Fader B on a new channel name, both in `briclite/interfaces/goxlr.py` and `briclite/main.py`:
+- **Studio Monitor Cut** (Cough button) tracks the guest-mic fader by channel name to decide when to cut Line Out for feedback safety — `_mic_volumes` was keyed on `("Mic", "Chat")` and is now `("Mic", "LineIn")`. Left unfixed, this would have silently stopped protecting Fader B.
+- **Fader-volume restore-across-restart** whitelist in `main.py`'s `_persist_goxlr_fader_volume()` was `{"Mic", "Chat", "Game", "LineIn"}` and is now `{"Mic", "LineIn", "Game", "Console"}` — this also fixes a latent bug from the Fader D change below, which had left `Console` out of the whitelist, so Fader D's volume was silently not being persisted across restarts since that change went live.
+
+Deployed via the standard restart+reconnect round-trip. Confirmed live via `goxlr-client --status-json`: Fader B's `channel` reads `LineIn`.
+
 ## Update — 2026-09-13: Fader D moved from LineIn to Console (optical)
 
 Tested live and made permanent same day. The music player now feeds Fader D digitally over the GoXLR's optical input (`Console` in the IPC/routing) instead of the analogue 3.5mm line input, freeing the Line In jack for another purpose. `_FADER_TO_SOURCE["D"]` and the corresponding `_FADERS` entry in `briclite/interfaces/goxlr.py` changed from `LineIn` to `Console`; the `_ROUTING` table swapped which of the two gets Headphones/BroadcastMix/LineOut — `LineIn` is now left inert (no fader, routed nowhere) rather than removed, so nothing accidentally plugged into the 3.5mm jack can bleed into the mix uncontrolled.
