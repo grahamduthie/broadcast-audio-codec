@@ -388,6 +388,8 @@ Cough is repurposed the same way Bleep is, as an arm/disarm toggle for a feedbac
 - Cough LED: cyan when disarmed, green when armed with Line Out currently live, red when armed and actively cutting.
 - Armed/disarmed state persists across a restart in the desired-link record (`monitor_cut_enabled`), exactly like `studio_pfl`.
 
+**Bleep/Cough LED brightness (fixed 2026-09-13):** both looked very dim regardless of colour. Neither button's mute state is ever actually toggled by this code (Bleep has none; Cough's is neutralised above), so both sit permanently in the native "Unmuted" state — and the default `SetButtonOffStyle` for that state, `"Dimmed"`, dims whatever colour is sent. Fix: `SetButtonOffStyle: [button, "Colour2"]` for both (confirmed valid values empirically against the live daemon: `Dimmed`, `Colour2`, `DimmedColour2`), plus sending the same colour in both `SetButtonColours` slots — previously the second slot was hardcoded `"000000"`, compounding the dimness.
+
 **WebSocket reachability is a functional requirement.** This same subscription
 also persists physical A--D fader changes, mirrors Fader C/Game to the
 PSA-side clean-news gain/mute, and clears the per-fader amber soft-pickup

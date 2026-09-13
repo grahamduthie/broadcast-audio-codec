@@ -472,6 +472,12 @@ Cough normally has a real native function (hold to mute the mic to all outputs),
 
 Both PFL and Studio Monitor Cut affect Line Out, so `_apply_monitor_routing()` computes one final desired routing state from both flags together rather than each toggling `SetRouter` independently — Studio Monitor Cut always wins on Line Out, Headphones always follow PFL alone regardless of the mic cut. Armed/disarmed state persists across a restart via the desired-link record (`monitor_cut_enabled`), exactly like `studio_pfl`.
 
+### Bleep/Cough LED brightness (fixed 2026-09-13)
+
+Both buttons looked very dim on hardware regardless of the colour sent via `SetButtonColours`. Root cause: a two-colour button's *off* appearance (native `mute_state: "Unmuted"`) is governed by a separate `SetButtonOffStyle` setting, independently of the colours themselves. Its default, `"Dimmed"`, dims colour_one whenever the button is "off" — and since neither Bleep nor Cough is ever actually put into a `"Muted"` state by this code (Bleep never was; Cough's native mute is neutralised to `ToStream2` above), both sat in the dimmed "off" appearance permanently.
+
+Confirmed the enum's valid values empirically against the live daemon (`{"Command": [serial, {"SetButtonOffStyle": ["Cough", "..."]}]}`): `Dimmed`, `Colour2`, `DimmedColour2`. `"Colour2"` shows colour_two at full brightness in the off state instead of a dimmed colour_one. Fix, in `_apply_colours()` (once per `start()`) and `_set_bleep_colour()`/`_set_cough_colour()`: set `SetButtonOffStyle: [button, "Colour2"]`, and send the *same* colour for both `SetButtonColours` slots (previously colour_two was hardcoded `"000000"`, which — combined with the default off_style — was the actual source of the dimness, not the colour choice itself).
+
 ### Headphone volume
 
 `POST /api/headphone_volume` with `{"pct": 0–100}` calls `SetVolume ["Headphones", N]` (N = pct × 255 / 100). The web UI shows a slider in GoXLR mode only. The current volume is read from `GetStatus` at startup and broadcast via WebSocket telemetry so the slider initialises to the actual hardware state.
