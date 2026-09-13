@@ -492,7 +492,9 @@ class GoXLRInterface(AudioInterface):
 
     def _set_fader_colour(self, fader: str) -> None:
         colour = _PICKUP_COLOUR if fader in self._pending_pickup_faders else _NORMAL_COLOUR
-        self._cmd({"SetFaderColours": [fader, colour, "000000"]})
+        # SetFaderColours is [fader, bottom, top]; swapped 2026-09 so low
+        # fader level reads blue and high level reads red, not the reverse.
+        self._cmd({"SetFaderColours": [fader, "000000", colour]})
 
     def _apply_monitor_routing(self) -> None:
         """Solo Music in headphones and Line Out during PFL; restore both when off.
