@@ -1,5 +1,152 @@
 # Troubleshooting Guide
 
+## Broadcast monitor laptop
+
+The Briclite monitoring laptop is `broadcast-T400` at `172.16.10.212`.
+Use `ssh broadcast@172.16.10.212` (passwordless SSH is configured from the
+development machine). It runs an Xfce X11 desktop, not GNOME/Cinnamon.
+
+### PSA web UI at `192.168.254.1`
+
+The Lenovo has two live networks; do not infer this machine's network state
+from a Windows host also present on the LAN.  The expected Linux interface
+configuration is:
+
+| Interface | Purpose | Address | Expected state |
+| --- | --- | --- | --- |
+| `wlp3s0` | Studio Wi-Fi/LAN | `172.16.10.212/24` | UP/RUNNING |
+| `enp0s25` | Direct PSA link | `192.168.254.2/30` | UP/RUNNING |
+
+The PSA web service is `http://192.168.254.1/`.  It is directly connected on
+`enp0s25`, so the route must show `192.168.254.1 dev enp0s25 src
+192.168.254.2`.  Wi-Fi remains the preferred general default route (metric
+600); the PSA's static default has metric 700, and the direct `/30` route
+ensures traffic to `.254.1` still goes through Ethernet.
+
+The endpoint was directly verified on 2026-09-11: ARP resolved
+`192.168.254.1` to `0c:c4:7a:b0:c9:d0`, ICMP had 0% loss, and an HTTP request
+bound to `enp0s25` returned `HTTP/1.1 200 OK` from Uvicorn.  Port 443 is
+closed: use the explicit `http://` URL, not HTTPS.  There was no system proxy
+configured on the Lenovo at that time.
+
+For a safe, non-mutating diagnosis, run:
+
+```bash
+ssh broadcast@172.16.10.212 '
+  ifconfig
+  ip route get 192.168.254.1
+  ip neigh show dev enp0s25
+  ping -I enp0s25 -c 3 -W 2 192.168.254.1
+  curl --interface enp0s25 -sv --connect-timeout 5 --max-time 10 \
+    http://192.168.254.1/ -o /dev/null
+'
+```
+
+### Screen blanks after ten minutes
+
+The relevant setting is X11's screen saver, not GNOME power settings. Check
+the live X11 session with:
+
+```bash
+DISPLAY=:0 XAUTHORITY=/home/broadcast/.Xauthority xset q
+```
+
+For the dedicated Briclite monitor, the expected result is a disabled screen
+saver and disabled DPMS. The installed
+`/home/broadcast/.config/autostart/disable-screensaver.desktop` applies both
+settings at every graphical login. It does not affect an Xfce session that
+was already running when the file was created, so apply the `xset` commands
+once directly in that case. Verify it with:
+
+```bash
+DISPLAY=:0 XAUTHORITY=/home/broadcast/.Xauthority xset q
+```
+
+The `Screen Saver` timeout must report `0` and `DPMS is Disabled`.
+
+#### Investigation record — 2026-09-11
+
+This was verified directly on `broadcast-T400`, rather than inferred from a
+desktop-settings GUI:
+
+- Xfce/X11 is the active desktop. GNOME/Cinnamon `gsettings` are not the
+  controls that govern the visible display on this machine.
+- The X server's default at the start of a new graphical session is a
+  600-second screen-saver timeout with DPMS enabled. This is the source of
+  the apparent ten-minute blanking.
+- The persistent fix is
+  `/home/broadcast/.config/autostart/disable-screensaver.desktop`. Its command
+  is `xset s off; xset s noblank; xset -dpms`, after a five-second delay so
+  that the display and Xfce power manager are ready.
+- A reboot test at 08:55 BST confirmed the startup ordering: immediately
+  after Xorg started at 08:56:48 the default `timeout: 600`/DPMS-enabled
+  state was briefly observable; by 08:57:47 the autostart command had applied
+  `timeout: 0` and disabled DPMS. Do not diagnose that short startup window
+  as a failed persistence fix.
+- Before the reboot, the active X session had begun on 9 Sep at 22:05, but
+  the autostart entry was created on 10 Sep at 19:53. It could not have run in
+  that already-existing session; apply the `xset` command directly once in
+  that situation.
+
+No cron job, systemd timer/service, active `xscreensaver`, `light-locker`,
+`xautolock`, caffeine process, or system/user startup script was found that
+periodically sets the timeout back to 600. X11 `xset` changes are not
+historically logged, so the writer of a future unexpected change cannot be
+identified retrospectively. First capture the live state and process list:
+
+```bash
+ssh broadcast@172.16.10.212 '
+  DISPLAY=:0 XAUTHORITY=/home/broadcast/.Xauthority xset q
+  pgrep -a -u broadcast -f "xscreensaver|light-locker|xautolock|caffeine|xset" || true
+'
+```
+
+If it is occurring only briefly after graphical login, wait at least a minute
+for the autostart job before intervening. If it remains at 600 after that,
+run the three `xset` commands in the previous section to restore service,
+then investigate newly added autostart entries, timers, and desktop software.
+
+#### Root cause and durable Xfce fix — 2026-09-11 09:40 BST
+
+The autostart entry alone is insufficient. During a live blanking incident,
+42 minutes after the reboot above, `xset q` again reported `timeout: 600`
+while DPMS was still disabled, the internal LVDS panel was connected, and no
+locker/screensaver process was running. This identified X11 screen-saver
+blanking rather than a lost video signal, suspend, or panel/backlight fault.
+
+`xfce4-power-manager` owns X11 screen-saver blanking as well as DPMS. Its
+`blank-on-ac` and `blank-on-battery` settings were absent, causing the
+power manager to use its built-in ten-minute default and subsequently
+reapply it to X11. Both must be explicitly saved as zero (never), in addition
+to `dpms-enabled=false`:
+
+```bash
+ssh broadcast@172.16.10.212 '
+  export DISPLAY=:0 XAUTHORITY=/home/broadcast/.Xauthority
+  export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+  xfconf-query -c xfce4-power-manager -n \
+    -p /xfce4-power-manager/blank-on-ac -t int -s 0
+  xfconf-query -c xfce4-power-manager -n \
+    -p /xfce4-power-manager/blank-on-battery -t int -s 0
+  xset s off; xset s noblank; xset -dpms
+'
+```
+
+The values are persisted in
+`/home/broadcast/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-power-manager.xml`.
+Verify all three durable controls and the live state with:
+
+```bash
+ssh broadcast@172.16.10.212 '
+  export DISPLAY=:0 XAUTHORITY=/home/broadcast/.Xauthority
+  export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+  xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/blank-on-ac
+  xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/blank-on-battery
+  xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/dpms-enabled
+  xset q
+'
+```
+
 ## Issue: Audio not flowing (no sound at remote, TX/RX meters frozen)
 
 ### Step 1: Check service status

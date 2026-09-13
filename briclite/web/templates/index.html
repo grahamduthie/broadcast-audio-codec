@@ -65,6 +65,8 @@
         .am-db   { color: #666; width: 52px; }
         .am-chan { color: #888; font-weight: bold; }
         .am-peak { color: #41e3ff; text-align: right; width: 64px; }
+        .goxlr-ui-link { display: block; margin: 12px 0 0; padding: 9px 10px; border: 1px solid #00b7c7; border-radius: 4px; color: #bafaff; background: #00292d; font-size: 12px; font-weight: bold; letter-spacing: 0.04em; text-align: center; text-decoration: none; }
+        .goxlr-ui-link:hover, .goxlr-ui-link:focus { background: #004249; color: #fff; outline: none; }
     </style>
 </head>
 <body>
@@ -95,6 +97,7 @@
                     <span class="vol-val" id="hp-vol-label">100%</span>
                 </div>
             </div>
+            <a id="goxlr-ui-link" class="goxlr-ui-link" href="#" target="_blank" rel="noopener noreferrer">OPEN GOXLR UTILITY ↗</a>
             <hr style="border-color:#333; margin: 12px 0 10px;">
             <label>Speaker Volume</label>
             <div class="vol-row">
@@ -212,6 +215,10 @@
     </div>
 
     <script>
+        // Reuse the PSA address serving this dashboard, whether it is the
+        // studio LAN address or the dedicated direct-Ethernet address.
+        document.getElementById('goxlr-ui-link').href = `http://${window.location.hostname}:14564/`;
+
         // ─── Digital meter helpers ────────────────────────────────────────────
         function dbToPct(db) {
             return Math.max(0, Math.min(100, (db + 60) * 1.667));
@@ -431,7 +438,10 @@
 
         // ─── Jitter chart ────────────────────────────────────────────────────
         const ctx = document.getElementById('jitterChart').getContext('2d');
-        const jitterChart = new Chart(ctx, {
+        // Chart.js is an optional CDN dependency.  The dashboard must still
+        // establish its local telemetry WebSocket when the operator is using
+        // the direct Ethernet link without Internet access.
+        const jitterChart = typeof Chart === 'undefined' ? null : new Chart(ctx, {
             type: 'line',
             data: {
                 labels: Array(30).fill(''),
@@ -506,7 +516,7 @@
                 document.getElementById('hp-vol-label').textContent = pct + '%';
             }
 
-            if (d.status === 'CONNECTED') {
+            if (d.status === 'CONNECTED' && jitterChart) {
                 jitterChart.data.datasets[0].data.shift();
                 jitterChart.data.datasets[0].data.push(d.jitter);
                 jitterChart.update('none');
