@@ -239,6 +239,13 @@ class GoXLRInterface(AudioInterface):
         The Behringer is an optional second source mixed into the GoXLR RX
         pipeline (extra_rx_source_bins). Unlike the GoXLR itself, its absence
         must not take the whole RX pipeline down.
+
+        As of 2026-09-13, Fader B (the guest mic) is fed by GoXLR LineIn
+        (the Behringer's analogue output) rather than this USB path, so this
+        capture branch feeds the now-inert Chat bus and is currently unused
+        in practice. Kept deliberately, not dead code: retained in case the
+        USB path is needed again. See CURRENT-STATUS.md and
+        GOXLR-MINI-LINUX.md ("Fader B moved from Chat to LineIn").
         """
         try:
             with open("/proc/asound/cards") as f:
