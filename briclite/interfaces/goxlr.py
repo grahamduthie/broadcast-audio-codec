@@ -25,6 +25,12 @@ _PFL_COLOUR      = "FF8800"  # orange — studio return PFL active
 _NORMAL_COLOUR   = "00FFFF"  # cyan   — normal
 _PICKUP_COLOUR   = "FFB000"  # amber — logical level restored; physical position unverified
 _GRADIENT_TOP_COLOUR = "FF0000"  # red — fixed top-of-strip anchor for the low/high gradient
+_MONITOR_CUT_ARMED_COLOUR   = "00FF00"  # green — Studio Monitor Cut armed, Line Out currently live
+_MONITOR_CUT_CUTTING_COLOUR = "FF0000"  # red   — Studio Monitor Cut armed and actively muting Line Out
+# A fader resting at the bottom of its travel can still read a small nonzero
+# volume (observed: 1/255) rather than a clean 0. Treat anything at or below
+# this as closed so that noise doesn't falsely trigger a Line Out cut.
+_MIC_OPEN_THRESHOLD = 5
 _BEHRINGER_DEVICE = "hw:CODEC,0"
 _MONITOR_OUTPUTS = ("Headphones", "LineOut")
 
@@ -146,7 +152,9 @@ class GoXLRInterface(AudioInterface):
                  restored_fader_volumes: Optional[dict[str, int]] = None,
                  on_fader_volume_changed: Optional[Callable[[str, int], None]] = None,
                  on_fader_mute_changed: Optional[Callable[[str, bool], None]] = None,
-                 on_volume_changed: Optional[Callable[[str, int], None]] = None):
+                 on_volume_changed: Optional[Callable[[str, int], None]] = None,
+                 monitor_cut_enabled: bool = False,
+                 on_monitor_cut_changed: Optional[Callable[[bool], None]] = None):
         self._serial: str | None = None
         self._studio_pfl = studio_pfl
         self._studio_saved_volume = studio_saved_volume if studio_pfl else None
@@ -157,6 +165,15 @@ class GoXLRInterface(AudioInterface):
             channel: level
             for channel, level in supplied_volumes.items()
             if channel in valid_channels and isinstance(level, int) and 0 <= level <= 255
+        }
+        # Studio Monitor Cut: while armed, Line Out is silenced whenever
+        # either microphone (Mic/A or Chat/B) fader is open, to protect
+        # against feedback when speakers are near the mics.
+        self._monitor_cut_enabled = monitor_cut_enabled
+        self._on_monitor_cut_changed = on_monitor_cut_changed
+        self._mic_volumes = {
+            channel: self._restored_fader_volumes.get(channel, 0)
+            for channel in ("Mic", "Chat")
         }
         # The GoXLR has non-motorised faders. Amber identifies controls whose
         # restored logical value may still need physical soft pickup.
@@ -424,6 +441,9 @@ class GoXLRInterface(AudioInterface):
         levels = mixer.get("levels", {}).get("volumes", {})
         if isinstance(levels.get("Game"), int):
             self._game_level = levels["Game"]
+        for channel in ("Mic", "Chat"):
+            if isinstance(levels.get(channel), int):
+                self._mic_volumes[channel] = levels[channel]
         fader_status = mixer.get("fader_status", {}).get("C", {})
         mute_state = fader_status.get("mute_state")
         self._game_muted = isinstance(mute_state, str) and mute_state != "Unmuted"
@@ -433,10 +453,11 @@ class GoXLRInterface(AudioInterface):
         self._apply_routing()
         self._apply_mute_functions()
         self._apply_colours()
+        # Reconcile Headphones/Line Out against both PFL and Studio Monitor
+        # Cut — needed even when neither is active, so the freshly-reset
+        # _monitor_routing cache above matches what was actually just sent.
+        self._apply_monitor_routing()
         if self._studio_pfl:
-            # Reassert PFL routing/volume/colour over the non-PFL defaults
-            # _apply_routing()/_apply_colours() just set above.
-            self._apply_monitor_routing()
             if self._studio_saved_volume is None:
                 self._apply_studio_pfl_volume()
             else:
@@ -447,6 +468,7 @@ class GoXLRInterface(AudioInterface):
                 # pre-PFL value we're holding onto).
                 self._cmd({"SetVolume": ["Music", 255]})
             self._set_bleep_colour()
+        self._set_cough_colour()
         # SetVolume is echoed through the daemon WebSocket. Do not mistake
         # our restoration commands for a physical slider pickup.
         self._pickup_ignore_until = time.monotonic() + 4.0
@@ -484,6 +506,13 @@ class GoXLRInterface(AudioInterface):
     def _apply_mute_functions(self) -> None:
         for fader, _ in _FADERS:
             self._cmd({"SetFaderMuteFunction": [fader, "All"]})
+        # Cough is repurposed as the Studio Monitor Cut toggle (see
+        # monitor_pfl()/_handle_ws_message()). Retargeting its own mute to
+        # the unused ToStream2 bus means a press (or a hold under the
+        # firmware's hold threshold) doesn't also audibly mute the mic; a
+        # genuine hold still forces a real mute to All regardless of this
+        # setting — a GoXLR firmware behaviour, not something we control.
+        self._cmd({"SetCoughMuteFunction": "ToStream2"})
 
     def _apply_colours(self) -> None:
         for fader, _ in _FADERS:
@@ -499,19 +528,35 @@ class GoXLRInterface(AudioInterface):
         # the top keeps both ends equally bright.
         self._cmd({"SetFaderColours": [fader, _GRADIENT_TOP_COLOUR, colour]})
 
+    def _any_mic_open(self) -> bool:
+        return any(level > _MIC_OPEN_THRESHOLD for level in self._mic_volumes.values())
+
+    def _monitor_cut_active(self) -> bool:
+        return self._monitor_cut_enabled and self._any_mic_open()
+
     def _apply_monitor_routing(self) -> None:
-        """Solo Music in headphones and Line Out during PFL; restore both when off.
-        Only sends SetRouter for crosspoints whose state has actually changed."""
-        desired = {
-            **{_FADER_TO_SOURCE[fader]: not self._studio_pfl for fader, _ in _FADERS},
-            "Music": self._studio_pfl,
-        }
-        for source, enabled in desired.items():
-            for output in _MONITOR_OUTPUTS:
-                key = (source, output)
-                if self._monitor_routing.get(key) != enabled:
-                    self._cmd({"SetRouter": [source, output, enabled]})
-                    self._monitor_routing[key] = enabled
+        """Reconcile Headphones/Line Out routing against PFL and Studio
+        Monitor Cut together, since both can affect Line Out at once.
+        PFL solos Music into both outputs, in place of the normal fader
+        mix. Studio Monitor Cut then additionally removes everything
+        (including a soloed Music) from Line Out only, never Headphones,
+        whenever it's armed and a mic fader is open — this always wins
+        over PFL on Line Out, since feedback safety matters more than a
+        pre-fade cue being audible on the room speakers.
+        Only sends SetRouter for crosspoints whose state has actually
+        changed."""
+        cutting = self._monitor_cut_active()
+        desired: dict[tuple[str, str], bool] = {}
+        for fader, _ in _FADERS:
+            source = _FADER_TO_SOURCE[fader]
+            desired[(source, "Headphones")] = not self._studio_pfl
+            desired[(source, "LineOut")] = (not self._studio_pfl) and not cutting
+        desired[("Music", "Headphones")] = self._studio_pfl
+        desired[("Music", "LineOut")] = self._studio_pfl and not cutting
+        for key, enabled in desired.items():
+            if self._monitor_routing.get(key) != enabled:
+                self._cmd({"SetRouter": [key[0], key[1], enabled]})
+                self._monitor_routing[key] = enabled
 
     def _apply_studio_pfl_volume(self) -> None:
         """Override Music volume to 255 when PFL active (true pre-fade listen);
@@ -529,6 +574,15 @@ class GoXLRInterface(AudioInterface):
     def _set_bleep_colour(self) -> None:
         colour = _PFL_COLOUR if self._studio_pfl else _NORMAL_COLOUR
         self._cmd({"SetButtonColours": ["Bleep", colour, "000000"]})
+
+    def _set_cough_colour(self) -> None:
+        if not self._monitor_cut_enabled:
+            colour = _NORMAL_COLOUR
+        elif self._monitor_cut_active():
+            colour = _MONITOR_CUT_CUTTING_COLOUR
+        else:
+            colour = _MONITOR_CUT_ARMED_COLOUR
+        self._cmd({"SetButtonColours": ["Cough", colour, "000000"]})
 
     def get_headphone_volume(self) -> int:
         if not GoXLRInterface.is_available():
@@ -563,6 +617,10 @@ class GoXLRInterface(AudioInterface):
     def studio_pfl_state(self) -> tuple[bool, Optional[int]]:
         """Return the desired PFL state so a new process can restore it."""
         return self._studio_pfl, self._studio_saved_volume
+
+    def monitor_cut_state(self) -> bool:
+        """Return whether Studio Monitor Cut is armed, for restoration."""
+        return self._monitor_cut_enabled
 
     def get_fader_volumes(self) -> dict[str, int]:
         """Return the four broadcast fader levels currently held by the daemon."""
@@ -611,6 +669,17 @@ class GoXLRInterface(AudioInterface):
                         self._on_fader_volume_changed(channel, value)
                     if channel == "Game":
                         self._game_level = value
+                    if channel in self._mic_volumes:
+                        was_cutting = self._monitor_cut_active()
+                        self._mic_volumes[channel] = value
+                        if self._monitor_cut_active() != was_cutting:
+                            await asyncio.to_thread(self._apply_monitor_routing)
+                            await asyncio.to_thread(self._set_cough_colour)
+                            logger.info(
+                                "Studio Monitor Cut %s (%s fader %s)",
+                                "engaging" if not was_cutting else "releasing",
+                                channel, "opened" if value > _MIC_OPEN_THRESHOLD else "closed",
+                            )
                     if (fader in self._pending_pickup_faders
                             and time.monotonic() >= self._pickup_ignore_until):
                         self._pending_pickup_faders.remove(fader)
@@ -630,6 +699,17 @@ class GoXLRInterface(AudioInterface):
                 self._game_muted = not self._game_muted
                 if self._on_fader_mute_changed is not None:
                     self._on_fader_mute_changed("Game", self._game_muted)
+                continue
+            if path.endswith("/button_down/Cough") and value is True:
+                self._monitor_cut_enabled = not self._monitor_cut_enabled
+                logger.info(
+                    "Cough pressed — Studio Monitor Cut %s",
+                    "armed" if self._monitor_cut_enabled else "disarmed",
+                )
+                await asyncio.to_thread(self._apply_monitor_routing)
+                await asyncio.to_thread(self._set_cough_colour)
+                if self._on_monitor_cut_changed is not None:
+                    self._on_monitor_cut_changed(self._monitor_cut_enabled)
                 continue
             if "/button_down/Bleep" not in path or patch.get("value") is not True:
                 continue

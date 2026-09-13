@@ -39,6 +39,19 @@ def _persist_pfl_state(active: bool, saved_volume: Optional[int]) -> None:
     desired_state.save(desired)
 
 
+def _persist_monitor_cut_state(enabled: bool) -> None:
+    """Keep Studio Monitor Cut armed/disarmed across a process restart.
+
+    This guards against feedback whenever a mic fader is open, so silently
+    dropping back to disarmed after an outage would be a real safety
+    regression — it must persist exactly like studio_pfl above."""
+    desired = desired_state.load()
+    if not desired:
+        return
+    desired["monitor_cut_enabled"] = enabled
+    desired_state.save(desired)
+
+
 def _persist_goxlr_fader_volume(channel: str, level: int) -> None:
     """Keep the GoXLR daemon's logical fader level across an outage."""
     desired = desired_state.load()
@@ -95,6 +108,8 @@ def _make_interface(cfg: dict) -> AudioInterface:
         "on_fader_volume_changed": _persist_goxlr_fader_volume,
         "on_fader_mute_changed": _sync_goxlr_fader_mute,
         "on_volume_changed": _persist_goxlr_monitor_volume,
+        "monitor_cut_enabled": bool(desired.get("monitor_cut_enabled", False)),
+        "on_monitor_cut_changed": _persist_monitor_cut_state,
     }
     kind = cfg.get("system", {}).get("audio_interface", "auto")
     if kind == "goxlr":
@@ -114,8 +129,10 @@ async def _save_desired_link() -> None:
     snapshot = await global_state.get_snapshot()
     studio_pfl = False
     studio_saved_volume = None
+    monitor_cut_enabled = False
     if isinstance(interface, GoXLRInterface):
         studio_pfl, studio_saved_volume = interface.studio_pfl_state()
+        monitor_cut_enabled = interface.monitor_cut_state()
         fader_volumes = interface.get_fader_volumes()
     else:
         fader_volumes = {}
@@ -126,6 +143,7 @@ async def _save_desired_link() -> None:
         "headphone_volume": snapshot.get("headphone_volume", 255),
         "audio_interface": "GoXLR" if isinstance(interface, GoXLRInterface) else "Behringer",
         "studio_pfl": studio_pfl,
+        "monitor_cut_enabled": monitor_cut_enabled,
         "studio_saved_volume": studio_saved_volume,
         "goxlr_fader_volumes": fader_volumes,
     })
