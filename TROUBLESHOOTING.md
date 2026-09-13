@@ -532,7 +532,8 @@ d=json.load(sys.stdin); m=list(d['mixers'].values())[0]
 print({k:v['channel'] for k,v in m['fader_status'].items()})
 print(m['levels']['volumes'])
 "
-# Expect A=Mic, B=Chat, C=Game, D=LineIn once connected; anything else means start() hasn't run yet.
+# Expect A=Mic, B=Chat, C=Game, D=Console once connected; anything else means start() hasn't run yet.
+# (D was LineIn before 2026-09-13; the music player now feeds Fader D over optical instead.)
 journalctl -u briclite.service | grep -i "api/connect"   # confirm whether a connect has actually happened this boot
 ```
 

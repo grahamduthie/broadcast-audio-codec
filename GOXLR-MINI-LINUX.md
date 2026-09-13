@@ -10,6 +10,7 @@ The TC-Helicon GoXLR Mini is a broadcast audio mixer with:
 - XLR mic input (with phantom power, hardware gate, compressor, EQ, de-esser)
 - 3.5mm headphone output
 - 3.5mm line input
+- Optical input (IPC/routing name `Console`) — confirmed working on the PSA300 unit 2026-09-13, feeding Fader D; earlier notes in this doc assumed this port was absent/inert on the Mini, which was wrong
 - USB-C connection to host (power + audio + control)
 - 4 manual faders (A, B, C, D) — **not** motorized (the full GoXLR has motorized faders)
 - Internal DSP mixing matrix: any input can be routed to any output bus
@@ -392,10 +393,12 @@ Config key `system.audio_interface` accepts `"auto"` (default), `"goxlr"`, or `"
 | A | Mic | Main microphone (XLR) | ✓ | ✓ | ✓ | |
 | B | Chat | Guest microphone (Behringer `hw:CODEC,0`) | ✓ | ✓ | ✓ | USB capture from Behringer |
 | C | Game | News feed (codec RX Right) | PSA clean branch | ✓ | ✓ | GoXLR copy is monitor-only |
-| D | LineIn | Music player (GoXLR 3.5mm line in) | ✓ | ✓ | ✓ | |
+| D | Console | Music player (GoXLR optical in) | ✓ | ✓ | ✓ | Moved from LineIn (3.5mm) 2026-09-13 — see below |
 | — | Music | Studio return (codec RX Left) | — | PFL only | PFL only | No fader; Bleep PFL only |
 
 The studio return is on the Music bus with no fader assigned. It is absent from both monitor outputs during normal operation and is never routed to BroadcastMix; Bleep/PFL solos it to Headphones and Line Out together.
+
+**Fader D moved from LineIn to Console (2026-09-13):** the music player now feeds the GoXLR digitally over optical instead of the analogue 3.5mm line input, freeing the Line In jack for another purpose. `LineIn` in `_ROUTING` is left inert (no fader, no routing to any output) rather than removed, so nothing plugged into the 3.5mm jack can bleed into the mix uncontrolled. Confirmed working live on the PSA300; see `_FADER_TO_SOURCE`/`_ROUTING` in `briclite/interfaces/goxlr.py`.
 
 ### Clean news return mix (implemented 2026-09-11)
 

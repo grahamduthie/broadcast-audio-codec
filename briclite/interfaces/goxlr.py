@@ -50,18 +50,21 @@ _DEFAULT_CLEAN_NEWS_ALIGNMENT_DELAY_MS = 200
 _CLEAN_NEWS_INTER_CHANNEL = "briclite_clean_news"
 
 # Maps fader letters to GoXLR routing source names
+# D moved from LineIn to Console (optical input) 2026-09-13: music now
+# arrives digitally from the PC over optical rather than analogue 3.5mm,
+# freeing the physical Line In jack for another purpose.
 _FADER_TO_SOURCE = {
     "A": "Microphone",
     "B": "Chat",       # Guest mic (Behringer)
     "C": "Game",       # News / Codec RX Right
-    "D": "LineIn",     # Music Player / GoXLR Line In
+    "D": "Console",    # Music Player / GoXLR optical input
 }
 
 _FADERS = [
     ("A", "Mic"),      # Main microphone (XLR)
     ("B", "Chat"),     # Guest microphone (Behringer capture)
     ("C", "Game"),     # News feed (Codec RX Right)
-    ("D", "LineIn"),   # Music Player (GoXLR Line In)
+    ("D", "Console"),  # Music Player (GoXLR optical input)
 ]
 
 # Full routing matrix applied on every start.
@@ -70,14 +73,19 @@ _FADERS = [
 # goes to BroadcastMix so the operator can fade it into the broadcast.
 _ROUTING = {
     "Microphone": {"Headphones": True,  "BroadcastMix": True,  "Sampler": False, "LineOut": True,  "StreamMix2": False},
-    "LineIn":     {"Headphones": True,  "BroadcastMix": True,  "Sampler": False, "LineOut": True,  "StreamMix2": False},
+    # LineIn is unused since Fader D moved to Console (optical) 2026-09-13;
+    # left inert (no fader controls it) so it can't bleed into the mix
+    # uncontrolled if something is later plugged into the 3.5mm jack.
+    "LineIn":     {"Headphones": False, "BroadcastMix": False, "Sampler": False, "LineOut": False, "StreamMix2": False},
     # Game is deliberately excluded from BroadcastMix.  RX Right/news still
     # reaches the local monitors through Fader C, while its clean pre-GoXLR
     # copy is added to codec TX in PipelineController.
     "Game":       {"Headphones": True,  "BroadcastMix": False, "Sampler": False, "LineOut": True,  "StreamMix2": False},
     "Chat":       {"Headphones": True,  "BroadcastMix": True,  "Sampler": False, "LineOut": True,  "StreamMix2": False},
     "Music":      {"Headphones": False, "BroadcastMix": False,  "Sampler": False, "LineOut": False, "StreamMix2": False},
-    "Console":    {"Headphones": False, "BroadcastMix": False,  "Sampler": False, "LineOut": False, "StreamMix2": False},
+    # Console (optical input): music player, Fader D. Carries the routing
+    # LineIn used to have.
+    "Console":    {"Headphones": True,  "BroadcastMix": True,  "Sampler": False, "LineOut": True,  "StreamMix2": False},
     "System":     {"Headphones": False, "BroadcastMix": False,  "Sampler": False, "LineOut": False, "StreamMix2": False},
     "Samples":    {"Headphones": False, "BroadcastMix": False,  "Sampler": False, "LineOut": False, "StreamMix2": False},
 }

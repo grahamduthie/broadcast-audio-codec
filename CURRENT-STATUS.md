@@ -2,6 +2,12 @@
 
 This is the handoff document for the live residual RX-audio glitch investigation, started 2026-09-09. Read this before resuming tests on the PSA300 — start with the most recent dated section below and work backward; older sections are historical record. For the full technical deep-dive specifically on the USB/audio glitch (not the overnight-flood or bug-fixing threads), see `USB-AUDIO-GLITCH.md`.
 
+## Update — 2026-09-13: Fader D moved from LineIn to Console (optical)
+
+Tested live and made permanent same day. The music player now feeds Fader D digitally over the GoXLR's optical input (`Console` in the IPC/routing) instead of the analogue 3.5mm line input, freeing the Line In jack for another purpose. `_FADER_TO_SOURCE["D"]` and the corresponding `_FADERS` entry in `briclite/interfaces/goxlr.py` changed from `LineIn` to `Console`; the `_ROUTING` table swapped which of the two gets Headphones/BroadcastMix/LineOut — `LineIn` is now left inert (no fader, routed nowhere) rather than removed, so nothing accidentally plugged into the 3.5mm jack can bleed into the mix uncontrolled.
+
+Deployed via the standard restart+reconnect round-trip; no cascading outage. Confirmed live via `goxlr-client --status-json`: Fader D's `channel` reads `Console`. See `GOXLR-MINI-LINUX.md` §10 and `ARCHITECTURE.md` §9 for the updated fader tables.
+
 ## Update — 2026-09-13: GoXLR lighting fixes; new Studio Monitor Cut safety feature
 
 Unrelated to the glitch investigation, but live on the PSA300 and pushed to `main` (GitHub) as of today, across four small deploys in one session. Commits, this repo → PSA300 local repo: `3f21d62`→`56286e1` (gradient colour order), `383b276`→`88e3a96` (gradient brightness), `f641ea0`→`a3fc833` (Studio Monitor Cut), `82fd0d5` on both (button brightness). All four were deployed with the standard restart+auto-reconnect round-trip; none caused a cascading outage.

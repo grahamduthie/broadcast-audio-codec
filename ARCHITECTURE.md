@@ -364,7 +364,7 @@ goxlr_mix.
 | A | Mic | Main microphone (XLR) | ✓ |
 | B | Chat | Guest mic (Behringer `hw:CODEC,0`) | ✓ |
 | C | Game | News feed (codec RX Right) | PSA clean branch (not GoXLR BroadcastMix) |
-| D | LineIn | Music player (GoXLR line in) | ✓ |
+| D | Console | Music player (GoXLR optical in) | ✓ |
 | — | Music | Studio return (codec RX Left) | — |
 
 The studio return (Music bus) has no fader and is never in the broadcast mix. It is audible on the two local monitor outputs—Headphones and Line Out—only via the Bleep PFL button.
