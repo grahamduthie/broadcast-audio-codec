@@ -3,426 +3,488 @@
 <head>
     <meta charset="UTF-8">
     <title>Broadcast Audio Codec Dashboard</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #121212; color: #e0e0e0; margin: 20px; }
-        .grid { display: grid; grid-template-columns: 1fr 3fr; gap: 20px; }
-        .card { background: #1e1e1e; border: 1px solid #333; padding: 20px; border-radius: 8px; }
-        .btn { padding: 12px 24px; font-weight: bold; border: none; border-radius: 4px; cursor: pointer; color: white; width: 100%; margin-bottom: 10px; }
-        .btn-start { background: #2e7d32; }
-        .btn-stop  { background: #c62828; }
-        input[type=text] { background: #2a2a2a; border: 1px solid #555; color: #e0e0e0; padding: 8px; border-radius: 4px; width: 100%; box-sizing: border-box; margin-bottom: 10px; font-size: 14px; }
-        .stat-val { font-size: 24px; font-weight: bold; color: #2196f3; }
-        label { font-size: 12px; color: #aaa; }
+        :root {
+            --bg: #101315;
+            --panel: #1a1f23;
+            --panel-hi: #21272c;
+            --line: #2c3439;
+            --line-lo: #23292d;
+            --ink: #cfd8dc;
+            --ink-dim: #6f7d84;
+            --ink-faint: #4a555b;
+            --cyan: #00e5ff;
+            --cyan-dim: #0a5a66;
+            --amber: #ffb000;
+            --green: #35d07f;
+            --red: #ff4d4d;
+            --blue: #2f7bd6;
+            --font-label: 'Oswald', sans-serif;
+            --font-num: 'JetBrains Mono', monospace;
+        }
+        * { box-sizing: border-box; }
+        html, body {
+            background: var(--bg);
+            color: var(--ink);
+            font-family: var(--font-label);
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            padding: 14px 18px 22px;
+            background:
+                radial-gradient(ellipse at 15% -10%, #1c2226 0%, transparent 55%),
+                radial-gradient(ellipse at 85% 110%, #171c1f 0%, transparent 55%),
+                var(--bg);
+            min-height: 100vh;
+        }
 
-        /* Meter layout */
-        .meters-row { display: flex; gap: 24px; align-items: flex-start; }
-        .meter-group { display: flex; flex-direction: column; align-items: center; gap: 6px; }
-        .meter-label { font-size: 11px; font-weight: bold; letter-spacing: 0.05em; color: #888; text-transform: uppercase; }
-        .meter-with-scale { display: flex; gap: 4px; align-items: stretch; }
+        /* ---------- header ---------- */
+        .topbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            padding: 10px 16px;
+            background: linear-gradient(180deg, #1d2327, #171b1e);
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), 0 6px 16px rgba(0,0,0,0.35);
+            margin-bottom: 10px;
+        }
+        .brand { display: flex; align-items: center; gap: 10px; }
+        .brand-mark {
+            width: 9px; height: 9px; border-radius: 50%;
+            background: var(--cyan);
+            box-shadow: 0 0 8px var(--cyan), 0 0 2px var(--cyan);
+        }
+        .brand h1 {
+            font-size: 14px; margin: 0; letter-spacing: 0.14em; text-transform: uppercase;
+            font-weight: 600; color: #eef3f5;
+        }
+        .brand small { display: block; font-size: 9px; letter-spacing: 0.12em; color: var(--ink-dim); margin-top: 1px; }
 
-        /* dBFS scale ruler */
-        .db-scale { position: relative; width: 28px; height: 260px; flex-shrink: 0; }
-        .db-tick { position: absolute; right: 0; display: flex; align-items: center; gap: 3px; transform: translateY(-50%); }
-        .db-tick-line { width: 6px; height: 1px; background: #555; }
-        .db-tick-line.align { background: #ef9a9a; width: 8px; }
-        .db-tick-label { font-size: 8px; color: #666; text-align: right; width: 20px; white-space: nowrap; }
-        .db-tick-label.align { color: #ef9a9a; font-weight: bold; }
+        .badge {
+            font-family: var(--font-num);
+            font-size: 10px; font-weight: 700; letter-spacing: 0.08em;
+            padding: 4px 9px; border-radius: 3px; text-transform: uppercase;
+        }
+        .badge-goxlr { background: #003338; color: var(--cyan); border: 1px solid #00e5ff55; }
+        .badge-behringer { background: #16233a; color: #7db3f5; border: 1px solid #2f7bd655; }
 
-        /* Meter bars */
-        .meter-container { display: flex; gap: 6px; height: 260px; background: #000; padding: 8px; border-radius: 4px; }
-        .bar  { width: 28px; background: #1a1a1a; position: relative; height: 100%; border-radius: 2px; overflow: hidden; }
-        .fill { position: absolute; bottom: 0; width: 100%; transition: height 0.1s linear; border-radius: 2px; }
-        .fill-tx { background: linear-gradient(to top, #1565c0 70%, #42a5f5 88%, #e3f2fd 100%); }
-        .fill-rx { background: linear-gradient(to top, #2e7d32 70%, #fbc02d 85%, #d32f2f 100%); }
-        .bar::after { content: ''; position: absolute; left: 0; right: 0; bottom: 70%; height: 1px; background: rgba(239,154,154,0.5); pointer-events: none; }
+        .status-cluster { display: flex; align-items: center; gap: 14px; }
+        .status-pill {
+            display: flex; align-items: center; gap: 7px;
+            font-family: var(--font-num); font-size: 11px; font-weight: 700; letter-spacing: 0.05em;
+            padding: 5px 10px; border-radius: 20px; background: #14181a; border: 1px solid var(--line);
+        }
+        .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-faint); }
+        .status-pill.live .status-dot { background: var(--green); box-shadow: 0 0 6px var(--green); animation: pulse 1.8s ease-in-out infinite; }
+        .status-pill.down .status-dot { background: var(--red); }
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.45; } }
 
-        .chan-label { font-size: 9px; color: #555; text-align: center; margin-top: 2px; }
-        .divider { width: 1px; background: #333; align-self: stretch; margin: 0 4px; }
+        .net-readout {
+            font-family: var(--font-num); font-size: 11px; color: var(--ink-dim);
+            display: flex; gap: 12px; align-items: center;
+        }
+        .net-readout b { color: var(--ink); font-weight: 600; }
+        .net-readout .warn { color: var(--amber); }
+        .net-readout .crit { color: var(--red); }
+        .net-toggle {
+            background: none; border: 1px solid var(--line); color: var(--ink-dim);
+            font-family: var(--font-num); font-size: 10px; border-radius: 4px; padding: 3px 7px;
+            cursor: pointer; letter-spacing: 0.05em;
+        }
+        .net-toggle:hover { border-color: var(--cyan-dim); color: var(--cyan); }
 
-        /* Segmented buttons (channel routing + meter type) */
-        .btn-mode { flex: 1; padding: 8px 4px; font-size: 12px; font-weight: bold; border: 1px solid #555; background: #2a2a2a; color: #aaa; cursor: pointer; }
-        .btn-mode:first-child { border-radius: 4px 0 0 4px; }
-        .btn-mode:last-child  { border-radius: 0 4px 4px 0; }
-        .btn-mode + .btn-mode { border-left: none; }
-        .btn-mode.active { background: #1565c0; color: #fff; border-color: #1565c0; }
+        /* ---------- network graph (collapsible) ---------- */
+        #net-panel {
+            max-height: 0; overflow: hidden; transition: max-height 0.28s ease;
+            background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+            margin-bottom: 0;
+        }
+        #net-panel.open { max-height: 160px; margin-bottom: 10px; }
+        #net-panel .inner { height: 130px; padding: 12px 16px; }
 
-        /* Interface mode badge */
-        .iface-badge { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: bold; letter-spacing: 0.08em; }
-        .iface-goxlr    { background: #003333; color: #00FFFF; border: 1px solid #00FFFF44; }
-        .iface-behringer { background: #1a2a3a; color: #90caf9; border: 1px solid #1565c044; }
+        /* ---------- transport bar ---------- */
+        .transport {
+            display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+            padding: 9px 14px;
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            margin-bottom: 14px;
+        }
+        .transport input[type=text] {
+            background: #101416; border: 1px solid var(--line); color: var(--ink);
+            padding: 7px 10px; border-radius: 4px; font-family: var(--font-num); font-size: 12px;
+            width: 190px;
+        }
+        .transport input[type=text]::placeholder { color: var(--ink-faint); }
+        .btn {
+            font-family: var(--font-label); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+            font-size: 11px; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; color: #061012;
+        }
+        .btn-start { background: var(--green); }
+        .btn-stop  { background: #3a2323; color: #ff9a9a; border: 1px solid #5a2c2c; }
+        .btn:hover { filter: brightness(1.1); }
+        .spacer { flex: 1 1 auto; }
+        .link-out {
+            font-family: var(--font-num); font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
+            color: var(--cyan); text-decoration: none; border: 1px solid var(--cyan-dim);
+            padding: 7px 12px; border-radius: 4px; white-space: nowrap;
+        }
+        .link-out:hover { background: #00292d; }
 
-        /* Headphone volume slider */
-        .vol-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
-        .vol-row input[type=range] { flex: 1; accent-color: #00FFFF; }
-        .vol-val { font-size: 13px; font-weight: bold; color: #00FFFF; width: 36px; text-align: right; flex-shrink: 0; }
+        /* ---------- rack ---------- */
+        .rack { display: flex; flex-wrap: wrap; gap: 10px; align-items: stretch; }
+        .module {
+            position: relative;
+            background: linear-gradient(180deg, var(--panel-hi), var(--panel));
+            border: 1px solid var(--line);
+            border-radius: 7px;
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.03), 0 4px 10px rgba(0,0,0,0.3);
+            padding: 12px 10px 10px;
+            display: flex; flex-direction: column; align-items: center;
+            width: 122px;
+        }
+        .module.wide { width: 168px; }
+        .module.pair { width: 216px; }
+        .screw {
+            position: absolute; width: 5px; height: 5px; border-radius: 50%;
+            background: radial-gradient(circle at 35% 30%, #6b7378, #2a2f33 70%);
+            box-shadow: 0 0 0 1px #0a0d0e;
+        }
+        .screw.tl { top: 5px; left: 5px; } .screw.tr { top: 5px; right: 5px; }
+        .screw.bl { bottom: 5px; left: 5px; } .screw.br { bottom: 5px; right: 5px; }
 
-        /* Analogue meters */
-        .am-row { display: flex; gap: 8px; margin-top: 4px; }
-        .am-wrap { display: flex; flex-direction: column; }
-        .am-box { width: 200px; height: 111px; }
-        .am-labels { display: flex; justify-content: space-between; align-items: center; font-size: 10px; padding: 2px 4px; }
-        .am-db   { color: #666; width: 52px; }
-        .am-chan { color: #888; font-weight: bold; }
-        .am-peak { color: #41e3ff; text-align: right; width: 64px; }
-        .goxlr-ui-link { display: block; margin: 12px 0 0; padding: 9px 10px; border: 1px solid #00b7c7; border-radius: 4px; color: #bafaff; background: #00292d; font-size: 12px; font-weight: bold; letter-spacing: 0.04em; text-align: center; text-decoration: none; }
-        .goxlr-ui-link:hover, .goxlr-ui-link:focus { background: #004249; color: #fff; outline: none; }
+        .mod-label {
+            font-size: 11px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase;
+            color: #dfe6e9; margin-bottom: 2px; text-align: center;
+        }
+        .mod-sub { font-size: 8.5px; color: var(--ink-faint); letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 9px; text-align: center; height: 10px; }
+
+        /* gain-style control at top of a strip (mic preamp gain, PFL level) */
+        .trim-row { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 3px; }
+        .trim-title { font-size: 8.5px; letter-spacing: 0.08em; color: var(--amber); text-transform: uppercase; font-weight: 600; }
+        .trim-val { font-family: var(--font-num); font-size: 10.5px; color: var(--amber); font-weight: 600; }
+        input[type=range].trim-slider {
+            width: 100%; height: 3px; -webkit-appearance: none; appearance: none;
+            background: #33261000; border-radius: 2px;
+            background-image: linear-gradient(90deg, var(--amber), var(--amber));
+            background-repeat: no-repeat;
+        }
+        input[type=range].trim-slider::-webkit-slider-runnable-track { height: 3px; background: #3a3226; border-radius: 2px; }
+        input[type=range].trim-slider::-webkit-slider-thumb {
+            -webkit-appearance: none; width: 11px; height: 11px; border-radius: 50%;
+            background: var(--amber); margin-top: -4px; box-shadow: 0 0 4px #ffb00099, 0 0 0 2px #0002;
+            cursor: pointer;
+        }
+        input[type=range].trim-slider::-moz-range-track { height: 3px; background: #3a3226; border-radius: 2px; }
+        input[type=range].trim-slider::-moz-range-thumb {
+            width: 11px; height: 11px; border-radius: 50%; background: var(--amber); border: none;
+            box-shadow: 0 0 4px #ffb00099;
+        }
+
+        /* fader track */
+        .fader-track-wrap { display: flex; flex-direction: column; align-items: center; flex: 1 1 auto; }
+        .fader-track {
+            width: 26px; height: 210px; background: #0a0d0e; border-radius: 3px;
+            position: relative; overflow: hidden; border: 1px solid #000;
+            box-shadow: inset 0 2px 6px rgba(0,0,0,0.6);
+        }
+        .fader-fill {
+            position: absolute; bottom: 0; width: 100%;
+            background: linear-gradient(to top, #1565c0 0%, #1e88c9 55%, #ffb000 82%, #ff4d4d 100%);
+            transition: height 0.12s linear;
+        }
+        .fader-cap {
+            position: absolute; left: -4px; right: -4px; height: 5px;
+            background: #eef3f5; border-radius: 1px; box-shadow: 0 1px 3px rgba(0,0,0,0.6);
+            transition: bottom 0.12s linear;
+        }
+        .fader-readout { margin-top: 8px; font-family: var(--font-num); font-size: 12px; font-weight: 700; color: #eef3f5; }
+        .fader-readout .unit { font-size: 8.5px; color: var(--ink-dim); font-weight: 400; margin-left: 2px; }
+        .module.at-rest .mod-label { color: var(--ink-faint); }
+        .module.at-rest .fader-readout { color: var(--ink-faint); }
+
+        /* mic gain (no trim rescale — real hardware preamp) */
+        .mic-gain-block { width: 100%; margin-bottom: 8px; }
+
+        /* dBFS meter (real signal — master / studio-return / news) */
+        .db-meter-row { display: flex; gap: 6px; justify-content: center; flex: 1 1 auto; align-items: flex-end; }
+        .db-meter-col { display: flex; flex-direction: column; align-items: center; }
+        .db-track {
+            width: 24px; height: 210px; background: #0a0d0e; border-radius: 3px; border: 1px solid #000;
+            position: relative; overflow: hidden; box-shadow: inset 0 2px 6px rgba(0,0,0,0.6);
+        }
+        .db-fill { position: absolute; bottom: 0; width: 100%; transition: height 0.1s linear; }
+        .db-fill.tx { background: linear-gradient(to top, #1565c0 70%, #42a5f5 88%, #e3f2fd 100%); }
+        .db-fill.rx { background: linear-gradient(to top, #1f8a57 70%, #ffb000 87%, #ff4d4d 100%); }
+        .db-track::after {
+            content: ''; position: absolute; left: 0; right: 0; bottom: 70%; height: 1px;
+            background: rgba(255,255,255,0.28);
+        }
+        .db-chan-label { font-size: 8px; color: var(--ink-faint); margin-top: 4px; letter-spacing: 0.05em; }
+        .db-readout { font-family: var(--font-num); font-size: 10px; color: var(--ink-dim); margin-top: 6px; text-align: center; }
+
+        /* vertical monitor sliders (headphone / speaker) */
+        .vfader-wrap { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; height: 210px; }
+        input[type=range].vfader {
+            -webkit-appearance: none; appearance: none; width: 210px; height: 26px;
+            transform: rotate(-90deg);
+            background: transparent;
+        }
+        input[type=range].vfader::-webkit-slider-runnable-track { height: 6px; background: #0a0d0e; border-radius: 3px; border: 1px solid #000; }
+        input[type=range].vfader::-webkit-slider-thumb {
+            -webkit-appearance: none; width: 30px; height: 14px; border-radius: 2px; margin-top: -4px;
+            background: linear-gradient(180deg, #eef3f5, #b7c2c6); box-shadow: 0 1px 3px rgba(0,0,0,0.6);
+            cursor: pointer;
+        }
+        input[type=range].vfader::-moz-range-track { height: 6px; background: #0a0d0e; border-radius: 3px; border: 1px solid #000; }
+        input[type=range].vfader::-moz-range-thumb {
+            width: 30px; height: 14px; border-radius: 2px; background: #eef3f5; border: none;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.6);
+        }
+        .vfader-accent-cyan::-webkit-slider-thumb { background: linear-gradient(180deg, #baf6ff, #00b8cc); }
+        .vfader-accent-blue::-webkit-slider-thumb { background: linear-gradient(180deg, #bcd8ff, #2f7bd6); }
+
+        .pfl-level-row { width: 100%; margin-bottom: 6px; }
+
+        .not-goxlr-note {
+            font-family: var(--font-num); font-size: 10px; color: var(--ink-faint); text-align: center;
+            padding: 20px 6px;
+        }
+        @media (max-width: 760px) {
+            .module { width: 46%; }
+            .module.wide, .module.pair { width: 96%; }
+        }
     </style>
 </head>
 <body>
-    <h2>Broadcast Audio Codec Dashboard</h2>
-    <div class="grid">
-        <div class="card">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-                <h3 style="margin:0;">Controls</h3>
-                <span id="iface-badge" class="iface-badge iface-behringer">BEHRINGER</span>
+
+    <div class="topbar">
+        <div class="brand">
+            <div class="brand-mark"></div>
+            <div>
+                <h1>Broadcast Audio Codec</h1>
+                <small>PSA300 &middot; Studio Receiver</small>
             </div>
-            <label for="field-ip">Field Unit IP (Studio Receiver mode)</label>
-            <input type="text" id="field-ip" placeholder="e.g. 82.1.2.3 or leave blank for Remote Sender">
-            <button class="btn btn-start" onclick="connectLink()">CONNECT LINK</button>
-            <button class="btn btn-stop"  onclick="fetch('/api/disconnect', {method:'POST'})">DISCONNECT LINK</button>
-            <div style="margin: 10px 0 12px;">
-                <label>RX Channel Routing</label>
-                <div id="chan-mode-btns" style="display:flex; margin-top:6px;">
-                    <button class="btn-mode active" id="mode-stereo" onclick="setChannelMode('stereo')">L+R STEREO</button>
-                    <button class="btn-mode"        id="mode-left"   onclick="setChannelMode('left')">LEFT ONLY</button>
-                    <button class="btn-mode"        id="mode-right"  onclick="setChannelMode('right')">RIGHT ONLY</button>
-                </div>
-            </div>
-            <div id="goxlr-controls" style="display:none;">
-                <hr style="border-color:#333; margin: 12px 0 10px;">
-                <label>Headphone Volume</label>
-                <div class="vol-row">
-                    <input type="range" id="hp-vol-slider" min="0" max="100" value="100" oninput="onHpVolInput(this.value)">
-                    <span class="vol-val" id="hp-vol-label">100%</span>
-                </div>
-            </div>
-            <a id="goxlr-ui-link" class="goxlr-ui-link" href="#" target="_blank" rel="noopener noreferrer">OPEN GOXLR UTILITY ↗</a>
-            <hr style="border-color:#333; margin: 12px 0 10px;">
-            <label>Speaker Volume</label>
-            <div class="vol-row">
-                <input type="range" id="rx-vol-slider" min="0" max="100" value="100" oninput="onRxVolInput(this.value)" style="accent-color:#90caf9;">
-                <span class="vol-val" id="rx-vol-label" style="color:#90caf9;">100%</span>
-            </div>
-            <hr style="border-color:#333;">
-            <h4>Link Status: <span id="lbl-status" style="color:#d32f2f;">DISCONNECTED</span></h4>
-            <div>Jitter: <span id="lbl-jitter" class="stat-val">0</span> ms</div>
-            <div>Lost Packets: <span id="lbl-lost" class="stat-val" style="color:#d32f2f;">0</span></div>
+            <span id="iface-badge" class="badge badge-behringer" style="margin-left:6px;">BEHRINGER</span>
         </div>
-        <div class="card">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
-                <h3 style="margin:0;">Audio Levels &amp; Network Performance</h3>
-                <div id="meter-type-btns" style="display:flex;">
-                    <button class="btn-mode active" id="mt-digital"  onclick="setMeterType('digital')">DIGITAL</button>
-                    <button class="btn-mode"        id="mt-analogue" onclick="setMeterType('analogue')">ANALOGUE</button>
-                </div>
+        <div class="status-cluster">
+            <div class="net-readout">
+                JITTER <b id="lbl-jitter">0</b>ms &nbsp; LOST <b id="lbl-lost">0</b> &nbsp; LATE <b id="lbl-late">0</b>
+                <button class="net-toggle" id="net-toggle" onclick="toggleNetPanel()">▾ NETWORK</button>
             </div>
-            <div style="display:flex; gap:32px; align-items:flex-start;">
-
-                <!-- Digital meters -->
-                <div id="meters-digital">
-                    <div class="meters-row">
-                        <div class="meter-group">
-                            <div class="meter-label">TX Input</div>
-                            <div class="meter-with-scale">
-                                <div class="db-scale" id="scale-tx"></div>
-                                <div class="meter-container">
-                                    <div style="display:flex;flex-direction:column;align-items:center;">
-                                        <div class="bar"><div id="meter-tx-l" class="fill fill-tx"></div></div>
-                                        <div class="chan-label">L</div>
-                                    </div>
-                                    <div style="display:flex;flex-direction:column;align-items:center;">
-                                        <div class="bar"><div id="meter-tx-r" class="fill fill-tx"></div></div>
-                                        <div class="chan-label">R</div>
-                                    </div>
-                                </div>
-                            </div>
-                            <div id="lbl-tx-db" style="font-size:11px;color:#666;text-align:center;margin-top:2px;">— dBFS</div>
-                        </div>
-                        <div class="divider"></div>
-                        <div class="meter-group">
-                            <div class="meter-label">RX Output</div>
-                            <div class="meter-with-scale">
-                                <div class="db-scale" id="scale-rx"></div>
-                                <div class="meter-container">
-                                    <div style="display:flex;flex-direction:column;align-items:center;">
-                                        <div class="bar"><div id="meter-rx-l" class="fill fill-rx"></div></div>
-                                        <div class="chan-label">L</div>
-                                    </div>
-                                    <div style="display:flex;flex-direction:column;align-items:center;">
-                                        <div class="bar"><div id="meter-rx-r" class="fill fill-rx"></div></div>
-                                        <div class="chan-label">R</div>
-                                    </div>
-                                </div>
-                            </div>
-                            <div id="lbl-rx-db" style="font-size:11px;color:#666;text-align:center;margin-top:2px;">— dBFS</div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Analogue meters -->
-                <div id="analogue-meters" style="display:none; flex-direction:column; gap:10px;">
-                    <div>
-                        <div class="meter-label">TX Input</div>
-                        <div class="am-row">
-                            <div class="am-wrap">
-                                <div class="am-box" id="am-box-tx-l"></div>
-                                <div class="am-labels">
-                                    <span id="am-rms-tx-l" class="am-db">—</span>
-                                    <span class="am-chan">L</span>
-                                    <span id="am-pklbl-tx-l" class="am-peak">Peak —</span>
-                                </div>
-                            </div>
-                            <div class="am-wrap">
-                                <div class="am-box" id="am-box-tx-r"></div>
-                                <div class="am-labels">
-                                    <span id="am-rms-tx-r" class="am-db">—</span>
-                                    <span class="am-chan">R</span>
-                                    <span id="am-pklbl-tx-r" class="am-peak">Peak —</span>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                    <div>
-                        <div class="meter-label">RX Output</div>
-                        <div class="am-row">
-                            <div class="am-wrap">
-                                <div class="am-box" id="am-box-rx-l"></div>
-                                <div class="am-labels">
-                                    <span id="am-rms-rx-l" class="am-db">—</span>
-                                    <span class="am-chan">L</span>
-                                    <span id="am-pklbl-rx-l" class="am-peak">Peak —</span>
-                                </div>
-                            </div>
-                            <div class="am-wrap">
-                                <div class="am-box" id="am-box-rx-r"></div>
-                                <div class="am-labels">
-                                    <span id="am-rms-rx-r" class="am-db">—</span>
-                                    <span class="am-chan">R</span>
-                                    <span id="am-pklbl-rx-r" class="am-peak">Peak —</span>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Jitter chart -->
-                <div style="flex-grow:1; height:280px;">
-                    <canvas id="jitterChart"></canvas>
-                </div>
+            <div class="status-pill down" id="status-pill">
+                <div class="status-dot"></div>
+                <span id="lbl-status">DISCONNECTED</span>
             </div>
         </div>
     </div>
 
+    <div id="net-panel">
+        <div class="inner"><canvas id="jitterChart"></canvas></div>
+    </div>
+
+    <div class="transport">
+        <input type="text" id="field-ip" placeholder="Field unit IP (blank = remote sender)">
+        <button class="btn btn-start" onclick="connectLink()">Connect Link</button>
+        <button class="btn btn-stop" onclick="fetch('/api/disconnect', {method:'POST'})">Disconnect</button>
+        <div class="spacer"></div>
+        <a id="goxlr-ui-link" class="link-out" href="#" target="_blank" rel="noopener noreferrer">GoXLR Utility ↗</a>
+    </div>
+
+    <div class="rack">
+
+        <!-- MIC -->
+        <div class="module" id="strip-Mic">
+            <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
+            <div class="mod-label">Mic</div>
+            <div class="mod-sub">Fader A</div>
+            <div class="mic-gain-block">
+                <div class="trim-row"><span class="trim-title">Preamp Gain</span><span class="trim-val" id="val-mic-gain">50 dB</span></div>
+                <input type="range" class="trim-slider" id="slider-mic-gain" min="0" max="72" value="50" oninput="onMicGainInput(this.value)">
+            </div>
+            <div class="fader-track-wrap">
+                <div class="fader-track"><div class="fader-fill" id="fader-Mic"></div><div class="fader-cap" id="cap-Mic"></div></div>
+                <div class="fader-readout"><span id="readout-Mic">0</span><span class="unit">%</span></div>
+            </div>
+        </div>
+
+        <!-- LINE IN -->
+        <div class="module" id="strip-LineIn">
+            <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
+            <div class="mod-label">Line In</div>
+            <div class="mod-sub">Fader B &middot; Guest Mic</div>
+            <div class="fader-track-wrap">
+                <div class="fader-track"><div class="fader-fill" id="fader-LineIn"></div><div class="fader-cap" id="cap-LineIn"></div></div>
+                <div class="fader-readout"><span id="readout-LineIn">0</span><span class="unit">%</span></div>
+            </div>
+        </div>
+
+        <!-- CONSOLE -->
+        <div class="module" id="strip-Console">
+            <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
+            <div class="mod-label">Console</div>
+            <div class="mod-sub">Fader D &middot; Music Player</div>
+            <div class="fader-track-wrap">
+                <div class="fader-track"><div class="fader-fill" id="fader-Console"></div><div class="fader-cap" id="cap-Console"></div></div>
+                <div class="fader-readout"><span id="readout-Console">0</span><span class="unit">%</span></div>
+            </div>
+        </div>
+
+        <!-- GAME / NEWS -->
+        <div class="module" id="strip-Game">
+            <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
+            <div class="mod-label">News</div>
+            <div class="mod-sub">Fader C &middot; Codec RX-R</div>
+            <div class="fader-track-wrap">
+                <div class="fader-track"><div class="fader-fill" id="fader-Game"></div><div class="fader-cap" id="cap-Game"></div></div>
+                <div class="fader-readout"><span id="readout-Game">0</span><span class="unit">%</span></div>
+            </div>
+        </div>
+
+        <!-- STUDIO RETURN / NEWS network signal -->
+        <div class="module pair" id="strip-network">
+            <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
+            <div class="mod-label">Incoming Network</div>
+            <div class="mod-sub">Pre-GoXLR &middot; always live</div>
+            <div class="pfl-level-row">
+                <div class="trim-row"><span class="trim-title" style="color:var(--cyan);">PFL Monitor Level</span><span class="trim-val" id="val-studio-return-level" style="color:var(--cyan);">48%</span></div>
+                <input type="range" class="trim-slider" id="slider-studio-return" min="0" max="100" value="48" oninput="onStudioReturnInput(this.value)" style="background-image:none;">
+            </div>
+            <div class="db-meter-row">
+                <div class="db-meter-col">
+                    <div class="db-track"><div class="db-fill rx" id="meter-studio-return"></div></div>
+                    <div class="db-chan-label">STUDIO<br>RETURN</div>
+                </div>
+                <div class="db-meter-col">
+                    <div class="db-track"><div class="db-fill rx" id="meter-news"></div></div>
+                    <div class="db-chan-label">NEWS</div>
+                </div>
+            </div>
+            <div class="db-readout"><span id="lbl-studio-return-db">— dBFS</span> &nbsp;/&nbsp; <span id="lbl-news-db">— dBFS</span></div>
+        </div>
+
+        <!-- MASTER / BROADCAST MIX -->
+        <div class="module wide" id="strip-master">
+            <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
+            <div class="mod-label">Broadcast Mix</div>
+            <div class="mod-sub">On-air &middot; combined output</div>
+            <div class="db-meter-row" style="margin-top:8px;">
+                <div class="db-meter-col">
+                    <div class="db-track"><div class="db-fill tx" id="meter-tx-l"></div></div>
+                    <div class="db-chan-label">L</div>
+                </div>
+                <div class="db-meter-col">
+                    <div class="db-track"><div class="db-fill tx" id="meter-tx-r"></div></div>
+                    <div class="db-chan-label">R</div>
+                </div>
+            </div>
+            <div class="db-readout" id="lbl-tx-db">— dBFS</div>
+        </div>
+
+        <!-- HEADPHONES -->
+        <div class="module" id="strip-hp" style="display:none;">
+            <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
+            <div class="mod-label">Headphones</div>
+            <div class="mod-sub">Operator monitor</div>
+            <div class="vfader-wrap">
+                <input type="range" class="vfader vfader-accent-cyan" id="hp-vol-slider" min="0" max="100" value="100" oninput="onHpVolInput(this.value)">
+            </div>
+            <div class="fader-readout"><span id="hp-vol-label">100</span><span class="unit">%</span></div>
+        </div>
+
+        <!-- SPEAKER -->
+        <div class="module" id="strip-speaker">
+            <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
+            <div class="mod-label">Speaker</div>
+            <div class="mod-sub">Line out master</div>
+            <div class="vfader-wrap">
+                <input type="range" class="vfader vfader-accent-blue" id="rx-vol-slider" min="0" max="100" value="100" oninput="onRxVolInput(this.value)">
+            </div>
+            <div class="fader-readout"><span id="rx-vol-label">100</span><span class="unit">%</span></div>
+        </div>
+
+    </div>
+
     <script>
-        // Reuse the PSA address serving this dashboard, whether it is the
-        // studio LAN address or the dedicated direct-Ethernet address.
         document.getElementById('goxlr-ui-link').href = `http://${window.location.hostname}:14564/`;
 
-        // ─── Digital meter helpers ────────────────────────────────────────────
-        function dbToPct(db) {
-            return Math.max(0, Math.min(100, (db + 60) * 1.667));
+        function dbToPct(db) { return Math.max(0, Math.min(100, (db + 60) * 1.667)); }
+        function pct255(v) { return Math.max(0, Math.min(100, (v / 255) * 100)); }
+
+        // ---------- fader-position strips (Mic / LineIn / Console / Game) ----------
+        const FADER_CHANNELS = ['Mic', 'LineIn', 'Console', 'Game'];
+        function updateFaderStrip(channel, value) {
+            const pct = pct255(value);
+            const fill = document.getElementById('fader-' + channel);
+            const cap = document.getElementById('cap-' + channel);
+            const readout = document.getElementById('readout-' + channel);
+            if (fill) fill.style.height = pct + '%';
+            if (cap) cap.style.bottom = `calc(${pct}% - 2px)`;
+            if (readout) readout.textContent = Math.round(pct);
+            const strip = document.getElementById('strip-' + channel);
+            if (strip) strip.classList.toggle('at-rest', value <= 5);
         }
 
-        const TICKS = [
-            { label: '0',   db:   0, align: false },
-            { label: '-6',  db:  -6, align: false },
-            { label: '-12', db: -12, align: false },
-            { label: '-18', db: -18, align: true  },
-            { label: '-24', db: -24, align: false },
-            { label: '-36', db: -36, align: false },
-            { label: '-54', db: -54, align: false },
-        ];
-        function buildScale(containerId) {
-            const el = document.getElementById(containerId);
-            const height = 260;
-            TICKS.forEach(t => {
-                const bottomPx = (dbToPct(t.db) / 100) * height;
-                const tick = document.createElement('div');
-                tick.className = 'db-tick';
-                tick.style.bottom = bottomPx + 'px';
-                tick.style.transform = 'translateY(50%)';
-                tick.innerHTML =
-                    `<span class="db-tick-label${t.align ? ' align' : ''}">${t.label}</span>` +
-                    `<div class="db-tick-line${t.align ? ' align' : ''}"></div>`;
-                el.appendChild(tick);
-            });
-        }
-        buildScale('scale-tx');
-        buildScale('scale-rx');
-
-        // ─── Analogue meter (ported from grahamduthie/mfm-meter) ─────────────
-        const AM = {
-            MIN: -60, MAX: 6, S: -58, E: 58,
-            R: 105, CX: 160, CY: 165, W: 320, H: 178,
-            get NCY() { return this.CY - 10; },
-            get NL()  { return this.R - 8; },
-            angle(dB) {
-                dB = Math.max(this.MIN, Math.min(this.MAX, dB));
-                return ((dB - this.MIN) / (this.MAX - this.MIN)) * (this.E - this.S) + this.S;
-            },
-            xy(cx, cy, r, deg) {
-                const rad = (deg - 90) * Math.PI / 180;
-                return [cx + r * Math.cos(rad), cy + r * Math.sin(rad)];
-            },
-            arc(cx, cy, r, a1, a2) {
-                const [x1, y1] = this.xy(cx, cy, r, a1);
-                const [x2, y2] = this.xy(cx, cy, r, a2);
-                return `M ${x1.toFixed(2)} ${y1.toFixed(2)} A ${r} ${r} 0 ${a2 - a1 > 180 ? 1 : 0} 1 ${x2.toFixed(2)} ${y2.toFixed(2)}`;
-            }
-        };
-
-        const amPeak = {};
-        const PEAK_HOLD_MS = 3000;
-        function amGetPeak(uid, val) {
-            const now = Date.now();
-            const s = amPeak[uid] || (amPeak[uid] = { v: AM.MIN, t: 0 });
-            if (val > s.v || now - s.t > PEAK_HOLD_MS) { s.v = val; s.t = now; }
-            return s.v;
+        // ---------- mic preamp gain ----------
+        let micGainTimer = null, micGainDragging = false;
+        function onMicGainInput(val) {
+            micGainDragging = true;
+            document.getElementById('val-mic-gain').textContent = val + ' dB';
+            clearTimeout(micGainTimer);
+            micGainTimer = setTimeout(() => {
+                fetch('/api/mic_gain', {
+                    method: 'POST', headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify({value: parseInt(val)})
+                }).then(() => { micGainDragging = false; });
+            }, 150);
         }
 
-        function amBuildSVG(uid) {
-            const {MIN, MAX, S, E, R, CX, CY, W, H, NCY, NL} = AM;
-            const f = n => n.toFixed(2);
-            const initA = AM.angle(MIN);
-            const tip = AM.xy(CX, NCY, NL, initA);
-            const mid = AM.xy(CX, NCY, NL - 16, initA);
-            const ref = AM.xy(CX, NCY, NL - 25, initA);
-            const pk  = AM.xy(CX, CY, R + 9, initA);
-            const TR  = 'x2 0.13s cubic-bezier(.285,1.65,.57,1.01),y2 0.13s cubic-bezier(.285,1.65,.57,1.01)';
-
-            const zones = [[MIN,-10,'#84cc16'],[-10,-1,'#facc15'],[-1,MAX,'#ef4444']]
-                .map(([a,b,c]) => `<path d="${AM.arc(CX,CY,R,AM.angle(a),AM.angle(b))}" stroke="${c}" stroke-width="16" fill="none" opacity="0.85"/>`)
-                .join('');
-
-            const MAJOR_DB = new Set([-60,-50,-40,-30,-20,-10,-6,-3,0,3,6]);
-            const SHOWN = [[-60,'-60'],[-50,'-50'],[-40,'-40'],[-30,'-30'],[-20,'-20'],[-10,'-10'],[0,'0'],[6,'+6']];
-            const ticks = SHOWN.map(([db, lbl]) => {
-                const a = AM.angle(db);
-                const [ix,iy] = AM.xy(CX,CY,R-6,a), [ox,oy] = AM.xy(CX,CY,R+18,a), [lx,ly] = AM.xy(CX,CY,R+35,a);
-                const col = db >= -1 ? '#ef4444' : db >= -10 ? '#f59e15' : '#59582c';
-                const anc = db === -60 ? 'end' : db === 6 ? 'start' : 'middle';
-                const fs  = db === 0 ? 15 : 13, fw = db === 0 ? 800 : 500;
-                return `<line x1="${f(ix)}" y1="${f(iy)}" x2="${f(ox)}" y2="${f(oy)}" stroke="${col}" stroke-width="2"/>
-<text x="${f(lx)}" y="${f(ly+3)}" font-size="${fs}" font-weight="${fw}" fill="${col}" text-anchor="${anc}" alignment-baseline="middle" style="font-family:'Roboto Mono',monospace;text-shadow:0 0 4px #fff6,0 0 1px #fff7">${lbl}</text>`;
-            }).join('');
-
-            let subs = '';
-            for (let db = MIN+1; db < MAX; db++) {
-                if (MAJOR_DB.has(db)) continue;
-                const a = AM.angle(db);
-                const [x1,y1] = AM.xy(CX,CY,R+2,a), [x2,y2] = AM.xy(CX,CY,R+16,a);
-                const c = db >= -1 ? '#f87171' : db >= -10 ? '#fde047' : '#bdb68c';
-                subs += `<line x1="${f(x1)}" y1="${f(y1)}" x2="${f(x2)}" y2="${f(y2)}" stroke="${c}" stroke-width="1" opacity="0.45"/>`;
-            }
-
-            return `<svg viewBox="0 0 ${W} ${H}" width="100%" height="100%">
-  <defs>
-    <linearGradient id="am-gl-${uid}" x1="0" y1="0" x2="0" y2="1">
-      <stop stop-color="#fff" stop-opacity="0.44" offset="0%"/>
-      <stop stop-color="#fff" stop-opacity="0.02" offset="80%"/>
-    </linearGradient>
-    <radialGradient id="am-fc-${uid}" cx="52%" cy="63%" r="95%">
-      <stop offset="12%" stop-color="#f6f3df"/>
-      <stop offset="86%" stop-color="#e2d7ac"/>
-    </radialGradient>
-  </defs>
-  <rect x="7" y="8" width="${W-14}" height="${H-22}" rx="19" fill="url(#am-fc-${uid})" stroke="#bcac88" stroke-width="4"/>
-  <rect x="2" y="4" width="${W-4}" height="${H-12}" rx="23" fill="none" stroke="#232221" stroke-width="7"/>
-  <ellipse cx="${CX}" cy="${CY-50}" rx="114" ry="27" fill="url(#am-gl-${uid})" opacity="0.28" pointer-events="none"/>
-  ${zones}${ticks}${subs}
-  <circle id="am-pk-${uid}" cx="${f(pk[0])}" cy="${f(pk[1])}" r="3.5" fill="#41e3ff" stroke="#3286ec" stroke-width="1.2" opacity="0"/>
-  <line id="am-n1-${uid}" x1="${CX}" y1="${NCY}" x2="${f(tip[0])}" y2="${f(tip[1])}" stroke="#cc2312" stroke-width="5" stroke-linecap="round" style="transition:${TR}"/>
-  <line id="am-n2-${uid}" x1="${CX}" y1="${NCY}" x2="${f(mid[0])}" y2="${f(mid[1])}" stroke="#ef4444" stroke-width="3.1" stroke-linecap="round" style="transition:${TR}"/>
-  <line id="am-n3-${uid}" x1="${CX}" y1="${NCY}" x2="${f(ref[0])}" y2="${f(ref[1])}" stroke="#fff9" stroke-width="1.1" stroke-linecap="round" opacity="0.35" style="transition:${TR}"/>
-  <circle cx="${CX}" cy="${NCY}" r="14" fill="#efe7ce" stroke="#bb9870" stroke-width="2.7"/>
-  <circle cx="${CX}" cy="${NCY}" r="6.2" fill="#cc2312" stroke="#0006" stroke-width="1.3"/>
-</svg>`;
+        // ---------- studio return PFL baseline level ----------
+        let studioReturnTimer = null, studioReturnDragging = false;
+        function onStudioReturnInput(val) {
+            studioReturnDragging = true;
+            document.getElementById('val-studio-return-level').textContent = val + '%';
+            clearTimeout(studioReturnTimer);
+            studioReturnTimer = setTimeout(() => {
+                fetch('/api/studio_return_level', {
+                    method: 'POST', headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify({level: Math.round(parseInt(val) * 255 / 100)})
+                }).then(() => { studioReturnDragging = false; });
+            }, 150);
         }
 
-        function amUpdate(uid, db, peakDb) {
-            const {CX, CY, R, NCY, NL, MIN, MAX} = AM;
-            const a = AM.angle(db);
-            const tip = AM.xy(CX, NCY, NL, a);
-            const mid = AM.xy(CX, NCY, NL-16, a);
-            const ref = AM.xy(CX, NCY, NL-25, a);
-            const setTip = (id, p) => {
-                const el = document.getElementById(id);
-                if (el) { el.setAttribute('x2', p[0].toFixed(2)); el.setAttribute('y2', p[1].toFixed(2)); }
-            };
-            setTip(`am-n1-${uid}`, tip);
-            setTip(`am-n2-${uid}`, mid);
-            setTip(`am-n3-${uid}`, ref);
-
-            const pk = document.getElementById(`am-pk-${uid}`);
-            if (pk) {
-                if (peakDb > MIN && peakDb <= MAX) {
-                    const pp = AM.xy(CX, CY, R+9, AM.angle(peakDb));
-                    pk.setAttribute('cx', pp[0].toFixed(2));
-                    pk.setAttribute('cy', pp[1].toFixed(2));
-                    pk.setAttribute('opacity', '0.66');
-                } else {
-                    pk.setAttribute('opacity', '0');
-                }
-            }
-            const rmsEl = document.getElementById(`am-rms-${uid}`);
-            const pkEl  = document.getElementById(`am-pklbl-${uid}`);
-            if (rmsEl) rmsEl.textContent = db.toFixed(1) + ' dB';
-            if (pkEl)  pkEl.textContent  = 'Peak ' + peakDb.toFixed(1) + ' dB';
-        }
-
-        function setMeterType(type) {
-            localStorage.setItem('meterMode', type);
-            document.getElementById('meters-digital').style.display  = type === 'digital'  ? '' : 'none';
-            document.getElementById('analogue-meters').style.display = type === 'analogue' ? 'flex' : 'none';
-            document.querySelectorAll('#meter-type-btns .btn-mode').forEach(b => b.classList.remove('active'));
-            document.getElementById('mt-' + type).classList.add('active');
-        }
-
-        // Build SVG for each analogue meter once at load
-        ['tx-l','tx-r','rx-l','rx-r'].forEach(uid => {
-            const el = document.getElementById('am-box-' + uid);
-            if (el) el.innerHTML = amBuildSVG(uid);
-        });
-        setMeterType(localStorage.getItem('meterMode') || 'digital');
-
-        // ─── Controls ────────────────────────────────────────────────────────
-        function setChannelMode(mode) {
-            fetch('/api/rx_mode', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ mode: mode })
-            });
-            document.querySelectorAll('#chan-mode-btns .btn-mode').forEach(b => b.classList.remove('active'));
-            document.getElementById('mode-' + mode).classList.add('active');
-        }
-
-        let rxVolTimer = null;
-        let rxSliderDragging = false;
+        // ---------- headphone / speaker volume (existing pattern) ----------
+        let rxVolTimer = null, rxSliderDragging = false;
         function onRxVolInput(val) {
             rxSliderDragging = true;
-            document.getElementById('rx-vol-label').textContent = val + '%';
+            document.getElementById('rx-vol-label').textContent = val;
             clearTimeout(rxVolTimer);
             rxVolTimer = setTimeout(() => {
                 fetch('/api/rx_volume', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ pct: parseInt(val) })
+                    method: 'POST', headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify({pct: parseInt(val)})
                 }).then(() => { rxSliderDragging = false; });
             }, 80);
         }
-
-        let hpVolTimer = null;
-        let hpSliderDragging = false;
+        let hpVolTimer = null, hpSliderDragging = false;
         function onHpVolInput(val) {
             hpSliderDragging = true;
-            document.getElementById('hp-vol-label').textContent = val + '%';
+            document.getElementById('hp-vol-label').textContent = val;
             clearTimeout(hpVolTimer);
             hpVolTimer = setTimeout(() => {
                 fetch('/api/headphone_volume', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ pct: parseInt(val) })
+                    method: 'POST', headers: {'Content-Type':'application/json'},
+                    body: JSON.stringify({pct: parseInt(val)})
                 }).then(() => { hpSliderDragging = false; });
             }, 80);
         }
@@ -430,37 +492,54 @@
         function connectLink() {
             const ip = document.getElementById('field-ip').value.trim();
             fetch('/api/connect', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: ip ? JSON.stringify({ target_ip: ip }) : '{}'
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: ip ? JSON.stringify({target_ip: ip}) : '{}'
             });
         }
 
-        // ─── Jitter chart ────────────────────────────────────────────────────
+        // ---------- network panel (auto show/hide on trouble) ----------
+        let netPanelManual = null; // null = auto, true/false = user override
+        let netPanelOpen = false;
+        let netQuietSince = null;
+        const JITTER_WARN_MS = 30;
+        function setNetPanel(open) {
+            netPanelOpen = open;
+            document.getElementById('net-panel').classList.toggle('open', open);
+        }
+        function toggleNetPanel() {
+            netPanelManual = !netPanelOpen;
+            setNetPanel(netPanelManual);
+        }
+        function evaluateNetPanel(d) {
+            if (netPanelManual !== null) return; // user has taken control
+            const trouble = d.jitter > JITTER_WARN_MS || d.lost > 0 || d.late > 0;
+            if (trouble) {
+                netQuietSince = null;
+                if (!netPanelOpen) setNetPanel(true);
+            } else if (netPanelOpen) {
+                if (netQuietSince === null) netQuietSince = Date.now();
+                if (Date.now() - netQuietSince > 8000) setNetPanel(false);
+            }
+        }
+
         const ctx = document.getElementById('jitterChart').getContext('2d');
-        // Chart.js is an optional CDN dependency.  The dashboard must still
-        // establish its local telemetry WebSocket when the operator is using
-        // the direct Ethernet link without Internet access.
         const jitterChart = typeof Chart === 'undefined' ? null : new Chart(ctx, {
             type: 'line',
-            data: {
-                labels: Array(30).fill(''),
-                datasets: [{
-                    label: 'Rolling Jitter (ms)',
-                    data: Array(30).fill(0),
-                    borderColor: '#2196f3',
-                    tension: 0.2,
-                    fill: false
-                }]
-            },
+            data: { labels: Array(30).fill(''), datasets: [{
+                label: 'Rolling Jitter (ms)', data: Array(30).fill(0),
+                borderColor: '#00e5ff', tension: 0.25, fill: false, pointRadius: 0,
+            }]},
             options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                scales: { y: { min: 0, max: 50 } }
+                responsive: true, maintainAspectRatio: false,
+                scales: {
+                    y: { min: 0, max: 50, grid: {color: '#2c3439'}, ticks: {color: '#6f7d84', font: {size: 9}} },
+                    x: { grid: {display: false}, ticks: {display: false} },
+                },
+                plugins: { legend: { display: false } },
             }
         });
 
-        // ─── WebSocket telemetry ──────────────────────────────────────────────
+        // ---------- WebSocket telemetry ----------
         function connectTelemetry() {
         const ws = new WebSocket(`ws://${window.location.host}/ws/telemetry`);
         ws.onclose = () => setTimeout(connectTelemetry, 1000);
@@ -468,58 +547,71 @@
         ws.onmessage = (event) => {
             const d = JSON.parse(event.data);
 
+            const live = d.status === 'CONNECTED';
             document.getElementById('lbl-status').innerText = d.status;
-            document.getElementById('lbl-status').style.color = d.status === 'CONNECTED' ? '#4caf50' : '#d32f2f';
+            document.getElementById('status-pill').classList.toggle('live', live);
+            document.getElementById('status-pill').classList.toggle('down', !live);
             document.getElementById('lbl-jitter').innerText = d.jitter;
-            document.getElementById('lbl-lost').innerText   = d.lost;
-
-            // Digital bar meters
-            document.getElementById('meter-tx-l').style.height = dbToPct(d.tx_peak_l) + '%';
-            document.getElementById('meter-tx-r').style.height = dbToPct(d.tx_peak_r) + '%';
-            document.getElementById('meter-rx-l').style.height = dbToPct(d.rx_peak_l) + '%';
-            document.getElementById('meter-rx-r').style.height = dbToPct(d.rx_peak_r) + '%';
-            const txPeak = Math.max(d.tx_peak_l, d.tx_peak_r);
-            const rxPeak = Math.max(d.rx_peak_l, d.rx_peak_r);
-            document.getElementById('lbl-tx-db').innerText = d.status === 'CONNECTED' ? txPeak.toFixed(1) + ' dBFS' : '— dBFS';
-            document.getElementById('lbl-rx-db').innerText = d.status === 'CONNECTED' ? rxPeak.toFixed(1) + ' dBFS' : '— dBFS';
-
-            // Analogue meters
-            const amVals = { 'tx-l': d.tx_peak_l, 'tx-r': d.tx_peak_r, 'rx-l': d.rx_peak_l, 'rx-r': d.rx_peak_r };
-            Object.entries(amVals).forEach(([uid, val]) => amUpdate(uid, val, amGetPeak(uid, val)));
-
-            // Channel routing buttons
-            if (d.rx_channel_mode) {
-                document.querySelectorAll('#chan-mode-btns .btn-mode').forEach(b => b.classList.remove('active'));
-                const modeEl = document.getElementById('mode-' + d.rx_channel_mode);
-                if (modeEl) modeEl.classList.add('active');
+            document.getElementById('lbl-lost').innerText = d.lost;
+            document.getElementById('lbl-late').innerText = d.late;
+            evaluateNetPanel(d);
+            if (jitterChart) {
+                jitterChart.data.datasets[0].data.shift();
+                jitterChart.data.datasets[0].data.push(d.jitter);
+                jitterChart.update('none');
             }
 
-            // Interface mode badge + GoXLR controls visibility
+            // Broadcast Mix (master)
+            document.getElementById('meter-tx-l').style.height = dbToPct(d.tx_peak_l) + '%';
+            document.getElementById('meter-tx-r').style.height = dbToPct(d.tx_peak_r) + '%';
+            const txPeak = Math.max(d.tx_peak_l, d.tx_peak_r);
+            document.getElementById('lbl-tx-db').innerText = live ? txPeak.toFixed(1) + ' dBFS' : '— dBFS';
+
+            // Incoming network: Studio Return (was RX-L) / News (was RX-R)
+            document.getElementById('meter-studio-return').style.height = dbToPct(d.rx_peak_l) + '%';
+            document.getElementById('meter-news').style.height = dbToPct(d.rx_peak_r) + '%';
+            document.getElementById('lbl-studio-return-db').innerText = live ? d.rx_peak_l.toFixed(1) + ' dBFS' : '— dBFS';
+            document.getElementById('lbl-news-db').innerText = live ? d.rx_peak_r.toFixed(1) + ' dBFS' : '— dBFS';
+
+            // Interface badge
             if (d.audio_interface) {
                 const badge = document.getElementById('iface-badge');
                 const isGoxlr = d.audio_interface === 'GoXLR';
                 badge.textContent = d.audio_interface.toUpperCase();
-                badge.className = 'iface-badge ' + (isGoxlr ? 'iface-goxlr' : 'iface-behringer');
-                document.getElementById('goxlr-controls').style.display = isGoxlr ? '' : 'none';
+                badge.className = 'badge ' + (isGoxlr ? 'badge-goxlr' : 'badge-behringer');
+                document.getElementById('strip-hp').style.display = isGoxlr ? 'flex' : 'none';
             }
 
-            // Speaker volume slider
+            // Channel-strip fader positions
+            if (d.fader_volumes) {
+                FADER_CHANNELS.forEach(ch => {
+                    if (d.fader_volumes[ch] !== undefined) updateFaderStrip(ch, d.fader_volumes[ch]);
+                });
+            }
+
+            // Mic preamp gain
+            if (d.mic_gain != null && !micGainDragging) {
+                document.getElementById('slider-mic-gain').max = d.mic_gain_max || 72;
+                document.getElementById('slider-mic-gain').value = d.mic_gain;
+                document.getElementById('val-mic-gain').textContent = d.mic_gain + ' dB';
+            }
+
+            // Studio return PFL baseline level
+            if (d.studio_return_level != null && !studioReturnDragging) {
+                const pct = Math.round(d.studio_return_level * 100 / 255);
+                document.getElementById('slider-studio-return').value = pct;
+                document.getElementById('val-studio-return-level').textContent = pct + '%';
+            }
+
+            // Speaker / headphone volume
             if (d.rx_volume != null && !rxSliderDragging) {
                 document.getElementById('rx-vol-slider').value = d.rx_volume;
-                document.getElementById('rx-vol-label').textContent = d.rx_volume + '%';
+                document.getElementById('rx-vol-label').textContent = d.rx_volume;
             }
-
-            // Headphone volume slider (only sync when user is not dragging)
             if (d.headphone_volume != null && !hpSliderDragging) {
                 const pct = Math.round(d.headphone_volume * 100 / 255);
                 document.getElementById('hp-vol-slider').value = pct;
-                document.getElementById('hp-vol-label').textContent = pct + '%';
-            }
-
-            if (d.status === 'CONNECTED' && jitterChart) {
-                jitterChart.data.datasets[0].data.shift();
-                jitterChart.data.datasets[0].data.push(d.jitter);
-                jitterChart.update('none');
+                document.getElementById('hp-vol-label').textContent = pct;
             }
         };
         }

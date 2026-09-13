@@ -34,6 +34,16 @@ _MIC_OPEN_THRESHOLD = 5
 _BEHRINGER_DEVICE = "hw:CODEC,0"
 _MONITOR_OUTPUTS = ("Headphones", "LineOut")
 
+# Software trim (rescaling SetVolume against the raw fader reading) was
+# tried for LineIn/Game/Console and reverted 2026-09-13: on this hardware the
+# fader's own LEDs are driven by that same SetVolume value, so trimming it
+# made the physical fader's lights stop matching its physical position
+# (e.g. pushed fully up but showing ~80% lit) — confirmed live and judged
+# not worth it. Only Mic keeps a trim control, using the real hardware
+# preamp gain (SetMicrophoneGain) instead, which has no such side effect.
+_MIC_GAIN_MIN = 0
+_MIC_GAIN_MAX = 72  # goxlr-client: "recommended to be lower than 72dB"
+
 # audiomixer's automatic latency query fails on this pipeline ("Latency query
 # failed" — the mix of a manually-fed appsrc branch and a live alsasrc branch
 # never negotiates a value), leaving it to assume 0 additional latency. Giving
@@ -166,7 +176,11 @@ class GoXLRInterface(AudioInterface):
                  on_fader_mute_changed: Optional[Callable[[str, bool], None]] = None,
                  on_volume_changed: Optional[Callable[[str, int], None]] = None,
                  monitor_cut_enabled: bool = False,
-                 on_monitor_cut_changed: Optional[Callable[[bool], None]] = None):
+                 on_monitor_cut_changed: Optional[Callable[[bool], None]] = None,
+                 restored_mic_gain: Optional[int] = None,
+                 on_mic_gain_changed: Optional[Callable[[int], None]] = None,
+                 restored_studio_return_level: Optional[int] = None,
+                 on_studio_return_level_changed: Optional[Callable[[int], None]] = None):
         self._serial: str | None = None
         self._studio_pfl = studio_pfl
         self._studio_saved_volume = studio_saved_volume if studio_pfl else None
@@ -211,6 +225,19 @@ class GoXLRInterface(AudioInterface):
         self._game_level = self._restored_fader_volumes.get("Game", 255)
         self._game_muted = False
         self._timing_probe = bool(clean_cfg.get("timing_probe", False))
+
+        self._mic_type: str = "Dynamic"
+        self._mic_gain: Optional[int] = (
+            max(_MIC_GAIN_MIN, min(_MIC_GAIN_MAX, restored_mic_gain))
+            if isinstance(restored_mic_gain, int) else None
+        )
+        self._on_mic_gain_changed = on_mic_gain_changed
+
+        self._studio_return_level: Optional[int] = (
+            max(0, min(255, restored_studio_return_level))
+            if isinstance(restored_studio_return_level, int) else None
+        )
+        self._on_studio_return_level_changed = on_studio_return_level_changed
         if _IS_MACOS:
             self._mac_tx_device: str = goxlr_cfg.get("mac_tx_device", "")
             self._mac_rx_device: str = goxlr_cfg.get("mac_rx_device", "")
@@ -468,9 +495,22 @@ class GoXLRInterface(AudioInterface):
         fader_status = mixer.get("fader_status", {}).get("C", {})
         mute_state = fader_status.get("mute_state")
         self._game_muted = isinstance(mute_state, str) and mute_state != "Unmuted"
+        mic_status = mixer.get("mic_status", {})
+        if isinstance(mic_status.get("mic_type"), str):
+            self._mic_type = mic_status["mic_type"]
+        if self._mic_gain is None:
+            gains = mic_status.get("mic_gains", {})
+            if isinstance(gains.get(self._mic_type), int):
+                self._mic_gain = gains[self._mic_type]
+        if self._studio_return_level is None and isinstance(levels.get("Music"), int):
+            self._studio_return_level = levels["Music"]
         logger.info(f"GoXLR Mini ready: serial={self._serial}")
         self._apply_faders()
         self._apply_fader_volumes()
+        if self._mic_gain is not None:
+            self._cmd({"SetMicrophoneGain": [self._mic_type, self._mic_gain]})
+        if self._studio_return_level is not None and not self._studio_pfl:
+            self._cmd({"SetVolume": ["Music", self._studio_return_level]})
         self._apply_routing()
         self._apply_mute_functions()
         self._apply_colours()
@@ -667,6 +707,59 @@ class GoXLRInterface(AudioInterface):
             if isinstance(volumes.get(channel), int) and 0 <= volumes[channel] <= 255
         }
 
+    def get_mic_type(self) -> str:
+        return self._mic_type
+
+    def get_mic_gain(self) -> Optional[int]:
+        """Hardware preamp gain (dB-ish, 0-72) for the active mic capsule type.
+        Falls back to a live query if start() hasn't run yet (mirrors
+        get_headphone_volume/get_line_out_volume below)."""
+        if self._mic_gain is None and GoXLRInterface.is_available():
+            status = self._ipc({"GetStatus": None})
+            mixers = status.get("Status", {}).get("mixers", {})
+            if mixers:
+                mic_status = next(iter(mixers.values())).get("mic_status", {})
+                if isinstance(mic_status.get("mic_type"), str):
+                    self._mic_type = mic_status["mic_type"]
+                gains = mic_status.get("mic_gains", {})
+                if isinstance(gains.get(self._mic_type), int):
+                    self._mic_gain = gains[self._mic_type]
+        return self._mic_gain
+
+    def set_mic_gain(self, value: int) -> None:
+        value = max(_MIC_GAIN_MIN, min(_MIC_GAIN_MAX, value))
+        self._mic_gain = value
+        if self._on_mic_gain_changed is not None:
+            self._on_mic_gain_changed(value)
+        if self._serial is not None:
+            self._cmd({"SetMicrophoneGain": [self._mic_type, value]})
+
+    def get_studio_return_level(self) -> Optional[int]:
+        """Baseline Music-bus (studio return) volume used outside of PFL.
+        Falls back to a live query if start() hasn't run yet."""
+        if self._studio_return_level is None and GoXLRInterface.is_available():
+            status = self._ipc({"GetStatus": None})
+            mixers = status.get("Status", {}).get("mixers", {})
+            if mixers:
+                volumes = next(iter(mixers.values())).get("levels", {}).get("volumes", {})
+                if isinstance(volumes.get("Music"), int):
+                    self._studio_return_level = volumes["Music"]
+        return self._studio_return_level
+
+    def set_studio_return_level(self, level: int) -> None:
+        level = max(0, min(255, level))
+        self._studio_return_level = level
+        if self._on_studio_return_level_changed is not None:
+            self._on_studio_return_level_changed(level)
+        if self._serial is None:
+            return
+        if self._studio_pfl:
+            # PFL is currently forcing Music to 255; the new baseline takes
+            # effect once PFL is released (see _apply_studio_pfl_volume).
+            self._studio_saved_volume = level
+        else:
+            self._cmd({"SetVolume": ["Music", level]})
+
     async def monitor_pfl(self) -> None:
         """Subscribe to the GoXLR daemon WebSocket and handle studio return PFL via Bleep button."""
         log = logging.getLogger("goxlr.pfl")
@@ -695,20 +788,21 @@ class GoXLRInterface(AudioInterface):
             for fader, channel in _FADERS:
                 if (path.endswith(f"/levels/volumes/{channel}")
                         and isinstance(value, int) and 0 <= value <= 255):
+                    reported = value
                     if self._on_fader_volume_changed is not None:
-                        self._on_fader_volume_changed(channel, value)
+                        self._on_fader_volume_changed(channel, reported)
                     if channel == "Game":
-                        self._game_level = value
+                        self._game_level = reported
                     if channel in self._mic_volumes:
                         was_cutting = self._monitor_cut_active()
-                        self._mic_volumes[channel] = value
+                        self._mic_volumes[channel] = reported
                         if self._monitor_cut_active() != was_cutting:
                             await asyncio.to_thread(self._apply_monitor_routing)
                             await asyncio.to_thread(self._set_cough_colour)
                             logger.info(
                                 "Studio Monitor Cut %s (%s fader %s)",
                                 "engaging" if not was_cutting else "releasing",
-                                channel, "opened" if value > _MIC_OPEN_THRESHOLD else "closed",
+                                channel, "opened" if reported > _MIC_OPEN_THRESHOLD else "closed",
                             )
                     if (fader in self._pending_pickup_faders
                             and time.monotonic() >= self._pickup_ignore_until):

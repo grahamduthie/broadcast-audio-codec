@@ -53,7 +53,9 @@ def _persist_monitor_cut_state(enabled: bool) -> None:
 
 
 def _persist_goxlr_fader_volume(channel: str, level: int) -> None:
-    """Keep the GoXLR daemon's logical fader level across an outage."""
+    """Keep the GoXLR daemon's logical fader level across an outage, and
+    mirror it live into the dashboard's telemetry."""
+    asyncio.create_task(global_state.set_fader_volume(channel, level))
     desired = desired_state.load()
     # Must match the channels currently assigned to A/B/C/D in
     # interfaces/goxlr.py's _FADER_TO_SOURCE (Mic/LineIn/Game/Console as of
@@ -74,6 +76,22 @@ def _sync_goxlr_fader_mute(channel: str, muted: bool) -> None:
     """Keep the PSA clean-news return branch in lockstep with Fader C mute."""
     if channel == "Game" and controller is not None:
         controller.set_clean_news_return_muted(muted)
+
+
+def _persist_goxlr_mic_gain(value: int) -> None:
+    desired = desired_state.load()
+    if not desired:
+        return
+    desired["goxlr_mic_gain"] = value
+    desired_state.save(desired)
+
+
+def _persist_goxlr_studio_return_level(value: int) -> None:
+    desired = desired_state.load()
+    if not desired:
+        return
+    desired["goxlr_studio_return_level"] = value
+    desired_state.save(desired)
 
 
 def _persist_goxlr_monitor_volume(channel: str, level: int) -> None:
@@ -98,6 +116,9 @@ async def _sync_goxlr_state(iface: AudioInterface) -> None:
         await global_state.update_metrics({
             "headphone_volume": headphone_vol,
             "rx_volume": line_out_pct,
+            "fader_volumes": iface.get_fader_volumes(),
+            "mic_gain": iface.get_mic_gain() or 0,
+            "studio_return_level": iface.get_studio_return_level() or 0,
         })
 
 
@@ -113,6 +134,10 @@ def _make_interface(cfg: dict) -> AudioInterface:
         "on_volume_changed": _persist_goxlr_monitor_volume,
         "monitor_cut_enabled": bool(desired.get("monitor_cut_enabled", False)),
         "on_monitor_cut_changed": _persist_monitor_cut_state,
+        "restored_mic_gain": desired.get("goxlr_mic_gain"),
+        "on_mic_gain_changed": _persist_goxlr_mic_gain,
+        "restored_studio_return_level": desired.get("goxlr_studio_return_level"),
+        "on_studio_return_level_changed": _persist_goxlr_studio_return_level,
     }
     kind = cfg.get("system", {}).get("audio_interface", "auto")
     if kind == "goxlr":
@@ -133,10 +158,14 @@ async def _save_desired_link() -> None:
     studio_pfl = False
     studio_saved_volume = None
     monitor_cut_enabled = False
+    mic_gain = None
+    studio_return_level = None
     if isinstance(interface, GoXLRInterface):
         studio_pfl, studio_saved_volume = interface.studio_pfl_state()
         monitor_cut_enabled = interface.monitor_cut_state()
         fader_volumes = interface.get_fader_volumes()
+        mic_gain = interface.get_mic_gain()
+        studio_return_level = interface.get_studio_return_level()
     else:
         fader_volumes = {}
     desired_state.save({
@@ -149,6 +178,8 @@ async def _save_desired_link() -> None:
         "monitor_cut_enabled": monitor_cut_enabled,
         "studio_saved_volume": studio_saved_volume,
         "goxlr_fader_volumes": fader_volumes,
+        "goxlr_mic_gain": mic_gain,
+        "goxlr_studio_return_level": studio_return_level,
     })
 
 
@@ -415,6 +446,12 @@ class HeadphoneVolumeRequest(BaseModel):
 class RxVolumeRequest(BaseModel):
     pct: int  # 0–100
 
+class MicGainRequest(BaseModel):
+    value: int  # 0-72
+
+class StudioReturnLevelRequest(BaseModel):
+    level: int  # 0-255
+
 
 @app.post("/api/connect")
 async def connect_codec(body: ConnectRequest = ConnectRequest()):
@@ -472,6 +509,30 @@ async def set_rx_volume(body: RxVolumeRequest):
     else:
         controller.set_rx_volume(body.pct)
     await global_state.update_metrics({"rx_volume": body.pct})
+    if desired_state.load():
+        await _save_desired_link()
+    return {"status": "success"}
+
+
+@app.post("/api/mic_gain")
+async def set_mic_gain(body: MicGainRequest):
+    if not isinstance(interface, GoXLRInterface):
+        return {"status": "error", "message": "Not in GoXLR mode"}
+    value = max(0, min(72, body.value))
+    interface.set_mic_gain(value)
+    await global_state.update_metrics({"mic_gain": value})
+    if desired_state.load():
+        await _save_desired_link()
+    return {"status": "success"}
+
+
+@app.post("/api/studio_return_level")
+async def set_studio_return_level(body: StudioReturnLevelRequest):
+    if not isinstance(interface, GoXLRInterface):
+        return {"status": "error", "message": "Not in GoXLR mode"}
+    level = max(0, min(255, body.level))
+    interface.set_studio_return_level(level)
+    await global_state.update_metrics({"studio_return_level": level})
     if desired_state.load():
         await _save_desired_link()
     return {"status": "success"}
