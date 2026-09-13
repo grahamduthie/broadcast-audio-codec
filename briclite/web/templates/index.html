@@ -214,10 +214,14 @@
         .module.at-rest .fader-readout { color: var(--ink-faint); }
 
         /* mic gain (no trim rescale — real hardware preamp) */
-        .mic-gain-block { width: 100%; margin-bottom: 8px; }
+        .mic-gain-block { width: 100%; }
+
+        /* reserved space above every bar/track so they all start at the same height,
+           whether or not a strip has a trim/gain control row */
+        .ctrl-slot { width: 100%; min-height: 40px; margin-bottom: 8px; }
 
         /* dBFS meter (real signal — master / studio-return / news) */
-        .db-meter-row { display: flex; gap: 6px; justify-content: center; flex: 1 1 auto; align-items: flex-end; }
+        .db-meter-row { display: flex; gap: 6px; justify-content: center; flex: 1 1 auto; align-items: flex-start; }
         .db-meter-col { display: flex; flex-direction: column; align-items: center; }
         .db-track {
             width: 24px; height: 210px; background: #0a0d0e; border-radius: 3px; border: 1px solid #000;
@@ -254,7 +258,7 @@
         .vfader-accent-cyan::-webkit-slider-thumb { background: linear-gradient(180deg, #baf6ff, #00b8cc); }
         .vfader-accent-blue::-webkit-slider-thumb { background: linear-gradient(180deg, #bcd8ff, #2f7bd6); }
 
-        .pfl-level-row { width: 100%; margin-bottom: 6px; }
+        .pfl-level-row { width: 100%; }
 
         .not-goxlr-note {
             font-family: var(--font-num); font-size: 10px; color: var(--ink-faint); text-align: center;
@@ -308,7 +312,7 @@
             <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
             <div class="mod-label">Mic</div>
             <div class="mod-sub">Fader A</div>
-            <div class="mic-gain-block">
+            <div class="mic-gain-block ctrl-slot">
                 <div class="trim-row"><span class="trim-title">Preamp Gain</span><span class="trim-val" id="val-mic-gain">50 dB</span></div>
                 <input type="range" class="trim-slider" id="slider-mic-gain" min="0" max="72" value="50" oninput="onMicGainInput(this.value)">
             </div>
@@ -323,6 +327,7 @@
             <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
             <div class="mod-label">Line In</div>
             <div class="mod-sub">Fader B &middot; Guest Mic</div>
+            <div class="ctrl-slot"></div>
             <div class="fader-track-wrap">
                 <div class="fader-track"><div class="fader-fill" id="fader-LineIn"></div><div class="fader-cap" id="cap-LineIn"></div></div>
                 <div class="fader-readout"><span id="readout-LineIn">0</span><span class="unit">%</span></div>
@@ -334,6 +339,7 @@
             <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
             <div class="mod-label">News</div>
             <div class="mod-sub">Fader C &middot; Codec RX-R</div>
+            <div class="ctrl-slot"></div>
             <div class="fader-track-wrap">
                 <div class="fader-track"><div class="fader-fill" id="fader-Game"></div><div class="fader-cap" id="cap-Game"></div></div>
                 <div class="fader-readout"><span id="readout-Game">0</span><span class="unit">%</span></div>
@@ -345,6 +351,7 @@
             <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
             <div class="mod-label">Console</div>
             <div class="mod-sub">Fader D &middot; Music Player</div>
+            <div class="ctrl-slot"></div>
             <div class="fader-track-wrap">
                 <div class="fader-track"><div class="fader-fill" id="fader-Console"></div><div class="fader-cap" id="cap-Console"></div></div>
                 <div class="fader-readout"><span id="readout-Console">0</span><span class="unit">%</span></div>
@@ -356,6 +363,7 @@
             <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
             <div class="mod-label">Headphones</div>
             <div class="mod-sub">Operator monitor</div>
+            <div class="ctrl-slot"></div>
             <div class="vfader-wrap">
                 <input type="range" class="vfader vfader-accent-cyan" id="hp-vol-slider" min="0" max="100" value="100" oninput="onHpVolInput(this.value)">
             </div>
@@ -367,6 +375,7 @@
             <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
             <div class="mod-label">Speaker</div>
             <div class="mod-sub">Line out master</div>
+            <div class="ctrl-slot"></div>
             <div class="vfader-wrap">
                 <input type="range" class="vfader vfader-accent-blue" id="rx-vol-slider" min="0" max="100" value="100" oninput="onRxVolInput(this.value)">
             </div>
@@ -378,7 +387,7 @@
             <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
             <div class="mod-label">Incoming Network</div>
             <div class="mod-sub">Pre-GoXLR &middot; always live</div>
-            <div class="pfl-level-row">
+            <div class="pfl-level-row ctrl-slot">
                 <div class="trim-row"><span class="trim-title" style="color:var(--cyan);">PFL Monitor Level</span><span class="trim-val" id="val-studio-return-level" style="color:var(--cyan);">48%</span></div>
                 <input type="range" class="trim-slider" id="slider-studio-return" min="0" max="100" value="48" oninput="onStudioReturnInput(this.value)" style="background-image:none;">
             </div>
@@ -400,7 +409,8 @@
             <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
             <div class="mod-label">Broadcast Mix</div>
             <div class="mod-sub">On-air &middot; combined output</div>
-            <div class="db-meter-row" style="margin-top:8px;">
+            <div class="ctrl-slot"></div>
+            <div class="db-meter-row">
                 <div class="db-meter-col">
                     <div class="db-track"><div class="db-fill tx" id="meter-tx-l"></div></div>
                     <div class="db-chan-label">L</div>
