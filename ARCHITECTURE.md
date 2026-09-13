@@ -216,21 +216,28 @@ The incoming AAC stream is dual-mono: the left and right channels carry independ
 
 ## 6. Web Dashboard
 
+**Redesigned 2026-09-13** (commit `1277a0e` this repo / `8620ff2` on the PSA300) from a jitter-graph-dominated single layout into a "console strip" layout aimed at the Lenovo T400 operator laptop's ~1280×800 Firefox window. See `CURRENT-STATUS.md`'s 2026-09-13 dashboard-redesign entry for the full investigation trail (what GoXLR metering is/isn't real, and the trim feature that was tried and reverted) before changing this area again.
+
 **Real-time Updates:**
 - WebSocket at `/ws/telemetry` — 100ms polling interval
-- Sends: connection status, peak levels, jitter, lost/late packet counts, `rx_channel_mode`
+- Sends: connection status, peak levels, jitter, lost/late packet counts, `rx_channel_mode`, GoXLR fader positions (`fader_volumes`), Mic preamp gain (`mic_gain`/`mic_gain_max`), Studio Return PFL baseline level (`studio_return_level`)
 
-**Meter styles (toggle between):**
+**Layout — one module per "rack strip":**
+- **Mic / LineIn / Console / Game(News)** — a live fader-position bar (0-255, from the GoXLR daemon's WebSocket) for each of the four assigned faders. This is fader *position*, not a real audio-level meter — the GoXLR Mini has no per-channel metering (see below). Mic additionally exposes the real hardware preamp gain (`SetMicrophoneGain`); LineIn/Console/Game have no gain-stage control at all (a software-rescale "trim" was tried for these and reverted — the GoXLR's own fader LEDs are driven by the exact `SetVolume` value, so rescaling it desyncs the LEDs from the fader's physical position).
+- **Incoming Network (Studio Return / News)** — the only two *real* audio-level meters on the whole dashboard, because briclite taps this audio itself before it ever reaches the GoXLR. Studio Return = old RX-L (Music bus), News = old RX-R (Game bus). Also hosts the Studio Return PFL baseline level slider (`POST /api/studio_return_level`, sets the Music bus's un-fadered volume — audible only via Bleep PFL, see §10).
+- **Broadcast Mix (Master)** — the old TX Input meter, unchanged: the post-everything combined on-air signal, with the -18 dBFS alignment line.
+- **Headphones / Speaker** — unchanged volume controls, now vertical mini-faders to match the rack aesthetic.
 
-*Digital:* Vertical bar meters with dBFS scale ruler. TX Input (blue gradient), RX Output (green/amber/red gradient). -18 dBFS alignment line at 70% height.
+The old RX Channel Routing buttons (L+R Stereo/Left/Right) were removed from the UI — the backend `POST /api/rx_mode` and `rx_channel_mode` plumbing are untouched, just not exposed here. The old digital/analogue meter-style toggle and SVG VU-needle gauges (`grahamduthie/mfm-meter`-derived) were dropped in favour of one cohesive digital "LED bar" look across every module.
 
-*Analogue:* SVG needle meters, one per channel (TX-L, TX-R, RX-L, RX-R). Styled after a broadcast VU meter: beige face, colour-coded arc zones (green -60→-10, yellow -10→-1, red -1→+6), layered needle with cubic-bezier spring animation (130ms), cyan peak-hold dot (3-second hold). SVG paths computed from the same constants and math as the reference implementation at `grahamduthie/mfm-meter`. Meter type preference is saved in `localStorage`.
+**Jitter/network display:** `lbl-jitter`/`lbl-lost`/`lbl-late` are small always-on numbers in the header. The rolling Chart.js graph is collapsed by default (`#net-panel`) and only auto-expands when jitter exceeds 30ms or any packet is lost/late, collapsing again after ~8s quiet — or toggle it manually via the "▾ NETWORK" button, which then stops the auto behaviour until the page reloads.
 
 **Controls:**
 - Connect button — starts both pipelines, opens UDP socket
 - Disconnect button — halts pipelines, closes socket
 - Optional IP override field — allows changing `target_ip` at runtime
-- RX Channel Routing — L+R Stereo / Left Only / Right Only
+- `POST /api/mic_gain` `{"value": 0-72}` — Mic preamp gain
+- `POST /api/studio_return_level` `{"level": 0-255}` — Studio Return PFL baseline
 
 ---
 
@@ -418,7 +425,7 @@ The goxlr-utility daemon (`goxlr-daemon.service`) must be running for GoXLR mode
 
 **Bleep/PFL reset on reconnect — fixed 2026-09-09.** Any full reconnect within a running process (channel-mode switch, Behringer hotplug, the RX watchdog's auto-reconnect, or a plain `/api/disconnect`+`/api/connect`) calls `GoXLRInterface.start()` on the *same* `GoXLRInterface` instance, which used to unconditionally reset `_studio_pfl = False` and reapply default fader colours/routing — silently dropping an operator's studio-return PFL with no indication. Confirmed live the same day: a deploy-triggered restart plus its cascading watchdog auto-reconnect (see Testing & Debugging note below) both wiped PFL, requiring the operator to notice and re-engage it by hand twice. **Fix:** `start()` no longer force-resets `_studio_pfl`/`_studio_saved_volume` — only the "last pushed to hardware" routing cache is reset (to force a full resend in case the reconnect corresponds to an actual device reset), and if `_studio_pfl` was already `True`, PFL routing/volume/colour are explicitly reasserted instead of left at the non-PFL defaults `_apply_routing()`/`_apply_colours()` just applied. Verified live via `/api/disconnect`+`/api/connect` while PFL was active — no reset. A genuinely fresh `GoXLRInterface` instance (process boot, GoXLR hotplug in `_interface_monitor()`) still starts with PFL off via `__init__`, which is correct there.
 
-**Process restart persistence — extended 2026-09-11.** The desired-link record includes Bleep/PFL intent, the pre-PFL Music volume, and the daemon's logical levels for faders A–D. Every physical fader movement is recorded from the goxlr-utility WebSocket. A new `GoXLRInterface` reapplies those values before starting audio, preserving an open channel across a daemon or Briclite restart. GoXLR faders are non-motorised: their hardware positions cannot be queried on reconnect, so the device's normal soft-pickup behaviour prevents a moved slider from making a sudden jump until it crosses the restored value. Restored A–D faders are therefore amber rather than normal cyan. The first real post-recovery fader-volume event changes that individual fader back to cyan; this is visual-only and never changes its audio level. An explicit disconnect removes the complete record.
+**Process restart persistence — extended 2026-09-11, again 2026-09-13.** The desired-link record includes Bleep/PFL intent, the pre-PFL Music volume, and the daemon's logical levels for faders A–D. Every physical fader movement is recorded from the goxlr-utility WebSocket. A new `GoXLRInterface` reapplies those values before starting audio, preserving an open channel across a daemon or Briclite restart. GoXLR faders are non-motorised: their hardware positions cannot be queried on reconnect, so the device's normal soft-pickup behaviour prevents a moved slider from making a sudden jump until it crosses the restored value. Restored A–D faders are therefore amber rather than normal cyan. The first real post-recovery fader-volume event changes that individual fader back to cyan; this is visual-only and never changes its audio level. An explicit disconnect removes the complete record. As of 2026-09-13 the record also carries `goxlr_mic_gain` (Mic preamp gain) and `goxlr_studio_return_level` (Studio Return PFL baseline volume) — both restored/reapplied in `GoXLRInterface.start()` the same way, with a live-IPC-query fallback (`get_mic_gain()`/`get_studio_return_level()`) for the case where telemetry is read before `start()` has run at all.
 
 ---
 

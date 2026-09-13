@@ -8,8 +8,8 @@ This project enables standalone broadcast-grade audio transport from a headless 
 
 - **Bidirectional RTP/UDP** audio at 24 kHz stereo, AAC-LC codec
 - **Jitter buffer** with packet reordering, loss detection, and packet-repetition concealment
-- **RX channel routing** — select Left only, Right only, or L+R stereo output (for dual-mono sources)
-- **Live web dashboard** with dBFS metering (digital bar or analogue needle), jitter statistics, and connection controls
+- **RX channel routing** — select Left only, Right only, or L+R stereo output (for dual-mono sources); handled in the backend, no longer exposed in the dashboard UI
+- **Live web dashboard** — console-strip layout with per-GoXLR-channel fader/gain controls, a Broadcast Mix master meter, jitter statistics, and connection controls (redesigned 2026-09-13, see `CURRENT-STATUS.md`)
 - **Systemd auto-start** on boot
 
 ## Quick Start
@@ -71,13 +71,14 @@ pip install -r requirements.txt
 
 **Default URL:** `http://192.168.1.100:8080` (adjust IP as needed)
 
-- **Meter style toggle** — DIGITAL (bar meters) or ANALOGUE (SVG needle meters with peak hold)
-- TX Input meters (blue) — microphone/line input from USB audio interface
-- RX Output meters (green/amber/red) — audio from remote radio station
-- -18 dBFS reference line (broadcast standard)
-- Jitter and packet-loss statistics
+Console-strip layout (redesigned 2026-09-13 — see `ARCHITECTURE.md` §6 and `CURRENT-STATUS.md` for the full rationale, and before changing it again note that the GoXLR Mini has **no live per-channel audio metering** for Mic/LineIn/Console, confirmed by direct testing):
+
+- **Mic / LineIn / Console / Game(News)** strips — live GoXLR fader-position bars; Mic also has a real hardware preamp gain control
+- **Incoming Network** module — the two genuinely real-time meters on the page: Studio Return and News, tapped before the signal reaches the GoXLR; also hosts the Studio Return PFL baseline level control
+- **Broadcast Mix** — the master, post-everything on-air meter, with the -18 dBFS reference line
+- Jitter/lost/late shown as compact numbers; the rolling graph auto-expands only on real trouble
 - Connect/Disconnect controls with optional target IP override
-- **RX Channel Routing** — L+R Stereo / Left Only / Right Only selector
+- Headphone/Speaker volume (GoXLR mode)
 
 ## Known Limitations
 

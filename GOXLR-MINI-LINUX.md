@@ -64,7 +64,7 @@ Each pair is a stereo input that appears on the GoXLR's internal routing matrix 
 | ALSA channels | GoXLR output | Notes |
 |---|---|---|
 | 0–1 | **Broadcast Mix** | The hardware mix used as the base of codec TX. In clean-news mode it excludes Game, which the PSA adds separately. |
-| 2–3 | Chat Mic | Processed mic signal (gate, comp, EQ applied) |
+| 2–3 | Chat Mic | Processed mic signal (gate, comp, EQ applied) — **not a pre-fader tap**, see below |
 | 4–15 | Mixed outputs | Headphone mix and other monitoring buses |
 | 16–17 | Sample Input | Sampler input |
 | 18–20 | Additional | Firmware-dependent |
@@ -72,6 +72,23 @@ Each pair is a stereo input that appears on the GoXLR's internal routing matrix 
 **Key fact:** Channels 0–1 of capture are the Broadcast Mix. Normally this is
 the codec TX source; in clean-news mode it is the base source and the PSA
 adds the decoded RX-right signal before encoding.
+
+**Correction, confirmed live 2026-09-13:** despite being a separate bus from
+Broadcast Mix, Chat Mic is *not* independent of the Mic channel's own fader —
+with the Mic fader at 0, Chat Mic went completely silent while the operator
+spoke continuously into the mic. `SetVolume` for a source appears to be a
+single gain stage applied before *all* of that source's destinations
+(Broadcast Mix, Chat Mic, Headphones, LineOut alike), not a per-destination
+control. Channels 4–20 were also recorded and checked against Mic/LineIn/
+Console test tones with no correlation found for LineIn or Console
+specifically (only 0–1 and 2–3 ever showed signal). The daemon's own
+`GetMicLevel` IPC command was also tried directly over `/tmp/goxlr.socket`
+and returns a hardcoded `-72.2` stub on this Mini variant, unaffected by
+fader position or real mic input. **Conclusion: there is no way to meter any
+channel's audio pre-fader (or even isolated post-fader, for LineIn/Console)
+on this hardware/firmware combination** — see `CURRENT-STATUS.md`'s
+2026-09-13 dashboard-redesign entry for the full test methodology before
+re-attempting this.
 
 ### GStreamer caps (confirmed on PSA300)
 
@@ -300,6 +317,18 @@ This enables/disables a crosspoint in the routing matrix.
 { "Command": ["<serial>", { "SetVolume": ["Game", 127] }] }
 ```
 Volume range: 0–255. Applies globally to that channel (affects all output buses it is routed to).
+
+**Set microphone preamp gain** (confirmed live 2026-09-13, used by briclite's dashboard Mic strip):
+```json
+{ "Command": ["<serial>", { "SetMicrophoneGain": ["Dynamic", 55] }] }
+```
+First arg is the mic capsule type (`Dynamic`/`Condenser`/`Jack` — read the active one from `GetStatus`'s `mic_status.mic_type`), second is gain 0–72 (`goxlr-client --help`: "recommended to be lower than 72dB"). This is the only channel on the Mini with a real hardware gain stage independent of its fader.
+
+**No live audio-level metering exists for any channel** (confirmed live 2026-09-13 — see `CURRENT-STATUS.md`'s dashboard-redesign entry for the full test). The `GetMicLevel` command exists in the daemon's IPC schema —
+```json
+{ "GetMicLevel": "<serial>" }
+```
+— and returns a plausible-looking float, but on this Mini variant it's a hardcoded `-72.2` regardless of real mic signal or fader position. Don't rely on it without retesting against different firmware/hardware.
 
 **Set fader mute function:**
 ```json
