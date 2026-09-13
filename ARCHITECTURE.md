@@ -378,6 +378,16 @@ The studio return (Music bus) has no fader and is never in the broadcast mix. It
 
 IPC calls triggered by button events run in a thread pool (`asyncio.to_thread`) to avoid blocking the FastAPI event loop.
 
+**Cough button — Studio Monitor Cut (added 2026-09-13):**
+
+Cough is repurposed the same way Bleep is, as an arm/disarm toggle for a feedback-safety feature: while armed, Line Out is muted whenever fader A (Mic) or B (Chat) is open, and restored the instant both are closed. This guards against feedback when monitor speakers are set up near the mics. Headphones are never touched — the operator can always monitor normally.
+
+- "Open" means the fader's logical volume reads above `_MIC_OPEN_THRESHOLD` (5/255) rather than a strict >0, because a fader resting at the bottom of its travel was observed reading a small nonzero value (1/255) rather than a clean 0; a strict threshold caused an immediate false cut on arming.
+- Implemented via `SetRouter`, not by overriding the `LineOut` master volume — the web UI's Speaker Volume slider already owns that value, so this avoids two features fighting over it. `_apply_monitor_routing()` computes one final desired state per (source, output) pair from both PFL and Studio Monitor Cut together, so they compose correctly rather than racing: Studio Monitor Cut always wins on Line Out (feedback safety over a PFL cue being audible on the room speakers), Headphones always follow PFL alone.
+- Cough's own native function is a real hold-to-mute-mic — not a blank slate like Bleep. `SetCoughMuteFunction: "ToStream2"` (an unused bus, the same trick already used for the repurposed fader-mute buttons) means a quick press/toggle doesn't also blip the mic; a genuine physical hold still forces a real mute to `All` regardless of this setting — that's GoXLR firmware behaviour, not something this code controls.
+- Cough LED: cyan when disarmed, green when armed with Line Out currently live, red when armed and actively cutting.
+- Armed/disarmed state persists across a restart in the desired-link record (`monitor_cut_enabled`), exactly like `studio_pfl`.
+
 **WebSocket reachability is a functional requirement.** This same subscription
 also persists physical A--D fader changes, mirrors Fader C/Game to the
 PSA-side clean-news gain/mute, and clears the per-fader amber soft-pickup

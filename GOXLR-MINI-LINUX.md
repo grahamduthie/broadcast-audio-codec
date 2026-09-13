@@ -444,7 +444,7 @@ implementation.
 
 ### Mute buttons
 
-All four fader mute buttons use `SetFaderMuteFunction: "All"` — standard GoXLR hardware mute behaviour, muting the channel to all output buses.
+All four fader mute buttons use `SetFaderMuteFunction: "All"` — standard GoXLR hardware mute behaviour, muting the channel to all output buses. Cough is the exception: its mute target is `SetCoughMuteFunction: "ToStream2"` (an unused bus), since it's repurposed as the Studio Monitor Cut toggle rather than a real mute button — see below.
 
 ### Bleep button — Studio Return Pre-Fade Listen
 
@@ -456,6 +456,21 @@ The Bleep button is repurposed as a **PFL toggle** for the studio return (codec 
 The studio return (RX Left / Music bus) is never in the broadcast mix, so activating PFL has no on-air effect.
 
 Implementation: `monitor_pfl()` subscribes to `ws://localhost:14564/api/websocket` as a background asyncio task. It watches for `button_down/Bleep: true` patches. IPC commands triggered by button presses run in a thread pool (`asyncio.to_thread`) to avoid blocking the FastAPI event loop.
+
+### Cough button — Studio Monitor Cut (added 2026-09-13)
+
+The Cough button is repurposed as an **arm/disarm toggle** for a feedback-safety feature, the same pattern as Bleep/PFL: while armed, Line Out is muted whenever fader A (Mic) or B (Chat) is open, so speakers set up near the mics can't feed back. Headphones are untouched.
+
+- **Press to arm:** Cough LED goes green (or straight to red if a mic is already open). Nothing changes yet if both mics are closed.
+- **A mic opens while armed:** `SetRouter` removes every source (A–D and, if PFL happens to be active, Music) from Line Out only. Cough LED goes red.
+- **Both mics close:** Line Out is restored via `SetRouter`. Cough LED returns to green.
+- **Press to disarm:** Line Out is restored if it was cut, and the LED returns to cyan.
+
+"Open" is fader volume above a small threshold (5/255), not a strict >0 — a fader resting at the bottom of its travel was observed reading 1/255 rather than a clean 0, which caused an immediate false cut on arming before the threshold was added.
+
+Cough normally has a real native function (hold to mute the mic to all outputs), unlike Bleep which had nothing to lose. `start()` now also sends `SetCoughMuteFunction: "ToStream2"` (an unused bus — the same no-op-target trick already used for the repurposed fader-mute buttons), so a quick press/toggle no longer also blips the mic. A genuine hold still forces a real mute regardless of this setting; that's GoXLR firmware behaviour, not something this code can override.
+
+Both PFL and Studio Monitor Cut affect Line Out, so `_apply_monitor_routing()` computes one final desired routing state from both flags together rather than each toggling `SetRouter` independently — Studio Monitor Cut always wins on Line Out, Headphones always follow PFL alone regardless of the mic cut. Armed/disarmed state persists across a restart via the desired-link record (`monitor_cut_enabled`), exactly like `studio_pfl`.
 
 ### Headphone volume
 
@@ -471,8 +486,9 @@ In GoXLR mode, `POST /api/rx_volume` with `{"pct": 0–100}` calls `SetVolume ["
 3. Connect to daemon socket, retrieve device serial
 4. Apply fader assignments via `SetFader`
 5. Apply full routing matrix via `SetRouter` (all 8 sources × 5 outputs)
-6. Restore mute buttons to `All` via `SetFaderMuteFunction`
+6. Restore mute buttons to `All` via `SetFaderMuteFunction`; retarget Cough to `ToStream2` via `SetCoughMuteFunction`
 7. Apply cyan gradient lighting (faders + Bleep button) via `SetFaderColours` / `SetButtonColours`
+8. Reconcile Headphones/Line Out routing against PFL and Studio Monitor Cut together, then set the Cough LED to match
 
 **Config source of truth (discovered 2026-09-09):** none of this comes from a saved `.goxlr` profile — it's asserted in code and reapplied idempotently every time `start()` runs. `start()` is called by `PipelineController.start()` (`core/pipeline_manager.py:196`), which only runs on an actual connect: `POST /api/connect`, `_full_reconnect()` (RX channel-mode switch, Behringer hotplug), or the RX watchdog's auto-reconnect — **never** merely by `briclite.service`/the host starting. `main.py`'s `lifespan()` only constructs the `PipelineController`; it does not start it. So right after a boot or `systemctl restart`, before any connect has happened, the physical GoXLR reflects whatever the `goxlr-utility` daemon's on-disk profile last held — on the PSA300 this is a profile literally named `Default`, confirmed unchanged since 1 Jun on every boot, with a different fader mapping (A=Mic, B=Music, C=Chat, D=System) and Music volume 0. That's expected pre-`start()` state, not a bug — don't try to fix an unexpected fader layout/colours by loading a different saved profile file; just call `POST /api/connect` (or trigger any reconnect) and the correct layout above is reasserted from code. Inspect live state with `goxlr-client --status-json` (shows `fader_status`, `router`, and `levels.volumes` for the running mixer).
 

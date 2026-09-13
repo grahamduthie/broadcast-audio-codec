@@ -1,6 +1,15 @@
-# Current Investigation Status — updated 2026-09-11
+# Current Investigation Status — updated 2026-09-13
 
 This is the handoff document for the live residual RX-audio glitch investigation, started 2026-09-09. Read this before resuming tests on the PSA300 — start with the most recent dated section below and work backward; older sections are historical record. For the full technical deep-dive specifically on the USB/audio glitch (not the overnight-flood or bug-fixing threads), see `USB-AUDIO-GLITCH.md`.
+
+## Update — 2026-09-13: fader gradient colours fixed; new Studio Monitor Cut safety feature
+
+Unrelated to the glitch investigation, but live on the PSA300 as of today:
+
+- **Fader LED gradient direction and brightness fixed.** The A–D fader strips had the gradient backwards (red at the bottom, blue at the top) and, after an initial fix, an uneven-brightness side effect (one end was `000000`/black, which is inherently dim). Both are now fixed: `SetFaderColours` uses a real red (`FF0000`) as the fixed top-of-strip anchor instead of black, so the strip reads blue(low)/red(high) with both ends equally bright. See `briclite/interfaces/goxlr.py`'s `_set_fader_colour()`.
+- **New: Studio Monitor Cut**, a feedback-safety feature. The Cough button is repurposed as an arm/disarm toggle (Cough previously had a real native hold-to-mute function, now retargeted to an unused bus via `SetCoughMuteFunction: "ToStream2"` so a quick press doesn't blip the mic). While armed, Line Out is muted via `SetRouter` whenever fader A (Mic) or B (Chat) reads open (above a small near-zero threshold — a fader at rest was observed reading 1/255, not a clean 0), and restored the instant both close. Headphones are never touched. Cough LED: cyan disarmed, green armed, red actively cutting. Armed state persists across restarts (`monitor_cut_enabled` in the desired-link record), exactly like `studio_pfl`. Full design/rationale in `ARCHITECTURE.md` and `GOXLR-MINI-LINUX.md` (search "Studio Monitor Cut"). Verified live: routing-diff logic dry-run tested off-device, then confirmed against the real daemon with physical Cough presses and fader A movement, including through a mid-test RX-watchdog reconnect.
+
+Both are deployed and committed on the PSA300 (`/opt/briclite` local repo) and this repo.
 
 ## Update — 2026-09-11: GoXLR Utility web UI enabled for the headless PSA300
 
