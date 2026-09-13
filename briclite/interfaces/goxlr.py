@@ -24,6 +24,7 @@ _ALSA_CONFIG_PATH = os.path.expanduser("~/.asoundrc")
 _PFL_COLOUR      = "FF8800"  # orange — studio return PFL active
 _NORMAL_COLOUR   = "00FFFF"  # cyan   — normal
 _PICKUP_COLOUR   = "FFB000"  # amber — logical level restored; physical position unverified
+_GRADIENT_TOP_COLOUR = "FF0000"  # red — fixed top-of-strip anchor for the low/high gradient
 _BEHRINGER_DEVICE = "hw:CODEC,0"
 _MONITOR_OUTPUTS = ("Headphones", "LineOut")
 
@@ -492,9 +493,11 @@ class GoXLRInterface(AudioInterface):
 
     def _set_fader_colour(self, fader: str) -> None:
         colour = _PICKUP_COLOUR if fader in self._pending_pickup_faders else _NORMAL_COLOUR
-        # SetFaderColours is [fader, bottom, top]; swapped 2026-09 so low
-        # fader level reads blue and high level reads red, not the reverse.
-        self._cmd({"SetFaderColours": [fader, "000000", colour]})
+        # SetFaderColours is [fader, top, bottom]. A black top made that end
+        # look dim relative to the accent-coloured bottom, even though the
+        # blue(low)/red(high) hue order was correct; using a real red for
+        # the top keeps both ends equally bright.
+        self._cmd({"SetFaderColours": [fader, _GRADIENT_TOP_COLOUR, colour]})
 
     def _apply_monitor_routing(self) -> None:
         """Solo Music in headphones and Line Out during PFL; restore both when off.
