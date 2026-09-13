@@ -467,7 +467,7 @@ class GoXLRInterface(AudioInterface):
                 # status (which would read back 255 and clobber the real
                 # pre-PFL value we're holding onto).
                 self._cmd({"SetVolume": ["Music", 255]})
-            self._set_bleep_colour()
+        self._set_bleep_colour()
         self._set_cough_colour()
         # SetVolume is echoed through the daemon WebSocket. Do not mistake
         # our restoration commands for a physical slider pickup.
@@ -518,7 +518,16 @@ class GoXLRInterface(AudioInterface):
         for fader, _ in _FADERS:
             self._cmd({"SetFaderDisplayStyle": [fader, "Gradient"]})
             self._set_fader_colour(fader)
-        self._cmd({"SetButtonColours": ["Bleep", _NORMAL_COLOUR, "000000"]})
+        # Bleep and Cough are two-colour status buttons. Their native "off"
+        # (Unmuted) appearance defaults to SetButtonOffStyle "Dimmed", which
+        # dims colour_one — and since neither button is ever actually put
+        # into a "Muted" state by this code, that left our status colour
+        # permanently dim regardless of which colour we sent. "Colour2"
+        # instead shows colour_two at full brightness in that state, so
+        # _set_bleep_colour()/_set_cough_colour() put the current status
+        # colour in both slots.
+        self._cmd({"SetButtonOffStyle": ["Bleep", "Colour2"]})
+        self._cmd({"SetButtonOffStyle": ["Cough", "Colour2"]})
 
     def _set_fader_colour(self, fader: str) -> None:
         colour = _PICKUP_COLOUR if fader in self._pending_pickup_faders else _NORMAL_COLOUR
@@ -573,7 +582,7 @@ class GoXLRInterface(AudioInterface):
 
     def _set_bleep_colour(self) -> None:
         colour = _PFL_COLOUR if self._studio_pfl else _NORMAL_COLOUR
-        self._cmd({"SetButtonColours": ["Bleep", colour, "000000"]})
+        self._cmd({"SetButtonColours": ["Bleep", colour, colour]})
 
     def _set_cough_colour(self) -> None:
         if not self._monitor_cut_enabled:
@@ -582,7 +591,7 @@ class GoXLRInterface(AudioInterface):
             colour = _MONITOR_CUT_CUTTING_COLOUR
         else:
             colour = _MONITOR_CUT_ARMED_COLOUR
-        self._cmd({"SetButtonColours": ["Cough", colour, "000000"]})
+        self._cmd({"SetButtonColours": ["Cough", colour, colour]})
 
     def get_headphone_volume(self) -> int:
         if not GoXLRInterface.is_available():
