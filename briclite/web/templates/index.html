@@ -351,6 +351,28 @@
             </div>
         </div>
 
+        <!-- HEADPHONES -->
+        <div class="module" id="strip-hp" style="display:none;">
+            <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
+            <div class="mod-label">Headphones</div>
+            <div class="mod-sub">Operator monitor</div>
+            <div class="vfader-wrap">
+                <input type="range" class="vfader vfader-accent-cyan" id="hp-vol-slider" min="0" max="100" value="100" oninput="onHpVolInput(this.value)">
+            </div>
+            <div class="fader-readout"><span id="hp-vol-label">100</span><span class="unit">%</span></div>
+        </div>
+
+        <!-- SPEAKER -->
+        <div class="module" id="strip-speaker">
+            <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
+            <div class="mod-label">Speaker</div>
+            <div class="mod-sub">Line out master</div>
+            <div class="vfader-wrap">
+                <input type="range" class="vfader vfader-accent-blue" id="rx-vol-slider" min="0" max="100" value="100" oninput="onRxVolInput(this.value)">
+            </div>
+            <div class="fader-readout"><span id="rx-vol-label">100</span><span class="unit">%</span></div>
+        </div>
+
         <!-- STUDIO RETURN / NEWS network signal -->
         <div class="module pair" id="strip-network">
             <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
@@ -389,28 +411,6 @@
                 </div>
             </div>
             <div class="db-readout" id="lbl-tx-db">— dBFS</div>
-        </div>
-
-        <!-- HEADPHONES -->
-        <div class="module" id="strip-hp" style="display:none;">
-            <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
-            <div class="mod-label">Headphones</div>
-            <div class="mod-sub">Operator monitor</div>
-            <div class="vfader-wrap">
-                <input type="range" class="vfader vfader-accent-cyan" id="hp-vol-slider" min="0" max="100" value="100" oninput="onHpVolInput(this.value)">
-            </div>
-            <div class="fader-readout"><span id="hp-vol-label">100</span><span class="unit">%</span></div>
-        </div>
-
-        <!-- SPEAKER -->
-        <div class="module" id="strip-speaker">
-            <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
-            <div class="mod-label">Speaker</div>
-            <div class="mod-sub">Line out master</div>
-            <div class="vfader-wrap">
-                <input type="range" class="vfader vfader-accent-blue" id="rx-vol-slider" min="0" max="100" value="100" oninput="onRxVolInput(this.value)">
-            </div>
-            <div class="fader-readout"><span id="rx-vol-label">100</span><span class="unit">%</span></div>
         </div>
 
     </div>
