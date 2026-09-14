@@ -574,8 +574,12 @@
             // Broadcast Mix (master)
             document.getElementById('meter-tx-l').style.height = dbToPct(d.tx_peak_l) + '%';
             document.getElementById('meter-tx-r').style.height = dbToPct(d.tx_peak_r) + '%';
+            // Broadcast Mix is a local GoXLR signal, not network-fed — show it
+            // regardless of connection status (see CURRENT-STATUS.md's
+            // 2026-09-14 entry). Incoming Network below stays gated on `live`
+            // since it has no local source and is genuinely silent otherwise.
             const txPeak = Math.max(d.tx_peak_l, d.tx_peak_r);
-            document.getElementById('lbl-tx-db').innerText = live ? txPeak.toFixed(1) + ' dBFS' : '— dBFS';
+            document.getElementById('lbl-tx-db').innerText = txPeak.toFixed(1) + ' dBFS';
 
             // Incoming network: Studio Return (was RX-L) / News (was RX-R)
             document.getElementById('meter-studio-return').style.height = dbToPct(d.rx_peak_l) + '%';
