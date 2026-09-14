@@ -514,6 +514,20 @@ Both buttons looked very dim on hardware regardless of the colour sent via `SetB
 
 Confirmed the enum's valid values empirically against the live daemon (`{"Command": [serial, {"SetButtonOffStyle": ["Cough", "..."]}]}`): `Dimmed`, `Colour2`, `DimmedColour2`. `"Colour2"` shows colour_two at full brightness in the off state instead of a dimmed colour_one. Fix, in `_apply_colours()` (once per `start()`) and `_set_bleep_colour()`/`_set_cough_colour()`: set `SetButtonOffStyle: [button, "Colour2"]`, and send the *same* colour for both `SetButtonColours` slots (previously colour_two was hardcoded `"000000"`, which — combined with the default off_style — was the actual source of the dimness, not the colour choice itself).
 
+As of 2026-09-14, Cough's armed-but-not-cutting colour is orange (`FF8800`, same constant as Bleep's PFL-on colour) rather than a dedicated green — see "Channel mute button colours" below for the change this accompanied.
+
+### Channel mute button colours (added 2026-09-14)
+
+Unlike Bleep/Cough, `Fader1Mute`–`Fader4Mute` (one per fader A–D) are each fader's own real hardware mute button — `SetFaderMuteFunction: "All"` is genuinely toggled, so unlike Bleep/Cough these buttons do enter a real native `"Muted"` state (see §8's `fader_status/<X>/mute_state` and `button_down/Fader<N>Mute` events above). `_set_mute_button_colour()` in `goxlr.py` sets, per fader:
+
+- Muted → red (`FF0000`), full brightness, checked first (overrides fader position).
+- Unmuted and the fader's own volume above `_MIC_OPEN_THRESHOLD` (5/255, the same constant Studio Monitor Cut uses) → green (`00FF00`), full brightness.
+- Unmuted and at/below the threshold → cyan (`00FFFF`), dim.
+
+The off-state (`"Colour2"` vs `"Dimmed"`) trick above is reused here, but unlike Bleep/Cough — which set `SetButtonOffStyle` once at start and never touch it again, because they never leave the "off" appearance — these buttons need two *different* off-state looks (bright green vs. dim cyan) depending on fader position, so `SetButtonOffStyle` is resent alongside `SetButtonColours` every time open/closed status changes, not just once.
+
+**Confirmed live this session, a case the original Bleep/Cough fix never actually exercised:** a button's "on" (genuinely `Muted`) appearance shows colour_one at full brightness *regardless* of the current `off_style` setting. Verified by pressing mute on both an open fader (LED was green) and a closed fader (LED was cyan/dim) — both immediately showed full-bright red. Worth re-confirming if this behaviour ever looks off, since it's inferred from one live test session rather than daemon source/docs.
+
 ### Headphone volume
 
 `POST /api/headphone_volume` with `{"pct": 0–100}` calls `SetVolume ["Headphones", N]` (N = pct × 255 / 100). The web UI shows a slider in GoXLR mode only. The current volume is read from `GetStatus` at startup and broadcast via WebSocket telemetry so the slider initialises to the actual hardware state.
