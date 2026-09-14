@@ -75,7 +75,7 @@ Console-strip layout (redesigned 2026-09-13 — see `ARCHITECTURE.md` §6 and `C
 
 - **Mic / LineIn / Console / Game(News)** strips — live GoXLR fader-position bars; Mic also has a real hardware preamp gain control
 - **Incoming Network** module — the two genuinely real-time meters on the page: Studio Return and News, tapped before the signal reaches the GoXLR; also hosts the Studio Return PFL baseline level control
-- **Broadcast Mix** — the master, post-everything on-air meter, with the -18 dBFS reference line
+- **Broadcast Mix** — the master, post-everything on-air meter, with the -18 dBFS reference line. Shows real levels regardless of connection status (2026-09-14) — it's a local GoXLR signal, unlike Incoming Network above which needs an actual network link
 - Jitter/lost/late shown as compact numbers; the rolling graph auto-expands only on real trouble
 - Connect/Disconnect controls with optional target IP override
 - Headphone/Speaker volume (GoXLR mode)
