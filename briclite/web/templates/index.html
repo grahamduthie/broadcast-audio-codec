@@ -34,14 +34,24 @@
             font-family: var(--font-label);
             margin: 0;
             padding: 0;
+            height: 100%;
         }
+        /* Kiosk-style, no-scroll layout: everything below the transport bar
+           (.dash-grid) is stretched to fill exactly whatever vertical space
+           is left in the viewport, so Broadcast Mix — the tallest, most
+           important element — always has room instead of being pushed off
+           the bottom of the screen. overflow-y stays as a safety net only:
+           it should never actually be needed. */
         body {
-            padding: 14px 18px 22px;
+            padding: 10px 18px 12px;
             background:
                 radial-gradient(ellipse at 15% -10%, #1c2226 0%, transparent 55%),
                 radial-gradient(ellipse at 85% 110%, #171c1f 0%, transparent 55%),
                 var(--bg);
-            min-height: 100vh;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
         }
 
         /* ---------- header ---------- */
@@ -55,7 +65,8 @@
             border: 1px solid var(--line);
             border-radius: 8px;
             box-shadow: inset 0 1px 0 rgba(255,255,255,0.04), 0 6px 16px rgba(0,0,0,0.35);
-            margin-bottom: 10px;
+            margin-bottom: 8px;
+            flex-shrink: 0;
         }
         .brand { display: flex; align-items: center; gap: 10px; }
         .brand-mark {
@@ -107,31 +118,31 @@
             max-height: 0; overflow: hidden; transition: max-height 0.28s ease;
             background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
             margin-bottom: 0;
+            flex-shrink: 0;
         }
-        #net-panel.open { max-height: 160px; margin-bottom: 10px; }
+        #net-panel.open { max-height: 160px; margin-bottom: 8px; }
         #net-panel .inner { height: 130px; padding: 12px 16px; }
 
         /* ---------- transport bar ---------- */
         .transport {
             display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
-            padding: 9px 14px;
+            padding: 7px 14px;
             background: var(--panel);
             border: 1px solid var(--line);
             border-radius: 8px;
-            margin-bottom: 14px;
+            margin-bottom: 8px;
+            flex-shrink: 0;
         }
-        .transport input[type=text] {
-            background: #101416; border: 1px solid var(--line); color: var(--ink);
-            padding: 7px 10px; border-radius: 4px; font-family: var(--font-num); font-size: 12px;
-            width: 190px;
-        }
-        .transport input[type=text]::placeholder { color: var(--ink-faint); }
         .btn {
             font-family: var(--font-label); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
             font-size: 11px; padding: 8px 16px; border: none; border-radius: 4px; cursor: pointer; color: #061012;
         }
-        .btn-start { background: var(--green); }
-        .btn-stop  { background: #3a2323; color: #ff9a9a; border: 1px solid #5a2c2c; }
+        /* Connect/Disconnect reflect live connection status (set in JS from
+           telemetry): the button matching the current state is solid, the
+           other is muted — not fixed colours regardless of status. */
+        .btn-solid-green { background: var(--green); color: #061012; }
+        .btn-solid-red   { background: var(--red); color: #2b0a0a; }
+        .btn-muted       { background: #232a2c; color: var(--ink-dim); border: 1px solid var(--line); }
         .btn:hover { filter: brightness(1.1); }
         .spacer { flex: 1 1 auto; }
         .link-out {
@@ -141,20 +152,16 @@
         }
         .link-out:hover { background: #00292d; }
 
-        /* ---------- rack ---------- */
-        .rack { display: flex; flex-wrap: wrap; gap: 10px; align-items: stretch; }
+        /* ---------- shared card chrome ---------- */
         .module {
             position: relative;
             background: linear-gradient(180deg, var(--panel-hi), var(--panel));
             border: 1px solid var(--line);
             border-radius: 7px;
             box-shadow: inset 0 1px 0 rgba(255,255,255,0.03), 0 4px 10px rgba(0,0,0,0.3);
-            padding: 12px 10px 10px;
+            padding: 9px 9px 7px;
             display: flex; flex-direction: column; align-items: center;
-            width: 122px;
         }
-        .module.wide { width: 168px; }
-        .module.pair { width: 216px; }
         .screw {
             position: absolute; width: 5px; height: 5px; border-radius: 50%;
             background: radial-gradient(circle at 35% 30%, #6b7378, #2a2f33 70%);
@@ -167,17 +174,16 @@
             font-size: 11px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase;
             color: #dfe6e9; margin-bottom: 2px; text-align: center;
         }
-        .mod-sub { font-size: 8.5px; color: var(--ink-faint); letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 9px; text-align: center; height: 10px; }
+        .mod-sub { font-size: 8.5px; color: var(--ink-faint); letter-spacing: 0.06em; text-transform: uppercase; margin-bottom: 5px; text-align: center; height: 10px; }
+        .module.at-rest .mod-label { color: var(--ink-faint); }
 
-        /* gain-style control at top of a strip (mic preamp gain, PFL level) */
+        /* gain/level control strip (mic preamp, PFL level, headphones, speaker) */
         .trim-row { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 3px; }
         .trim-title { font-size: 8.5px; letter-spacing: 0.08em; color: var(--amber); text-transform: uppercase; font-weight: 600; }
         .trim-val { font-family: var(--font-num); font-size: 10.5px; color: var(--amber); font-weight: 600; }
         input[type=range].trim-slider {
             width: 100%; height: 3px; -webkit-appearance: none; appearance: none;
-            background: #33261000; border-radius: 2px;
-            background-image: linear-gradient(90deg, var(--amber), var(--amber));
-            background-repeat: no-repeat;
+            background: transparent; border-radius: 2px;
         }
         input[type=range].trim-slider::-webkit-slider-runnable-track { height: 3px; background: #3a3226; border-radius: 2px; }
         input[type=range].trim-slider::-webkit-slider-thumb {
@@ -190,83 +196,147 @@
             width: 11px; height: 11px; border-radius: 50%; background: var(--amber); border: none;
             box-shadow: 0 0 4px #ffb00099;
         }
+        /* accent variants — cyan for PFL/headphones, blue for speaker */
+        .trim-slider.accent-cyan::-webkit-slider-thumb { background: var(--cyan); box-shadow: 0 0 4px #00e5ff99, 0 0 0 2px #0002; }
+        .trim-slider.accent-cyan::-moz-range-thumb { background: var(--cyan); box-shadow: 0 0 4px #00e5ff99; }
+        .trim-slider.accent-blue::-webkit-slider-thumb { background: var(--blue); box-shadow: 0 0 4px #2f7bd699, 0 0 0 2px #0002; }
+        .trim-slider.accent-blue::-moz-range-thumb { background: var(--blue); box-shadow: 0 0 4px #2f7bd699; }
 
-        /* fader track */
-        .fader-track-wrap { display: flex; flex-direction: column; align-items: center; flex: 1 1 auto; }
-        .fader-track {
-            width: 26px; height: 210px; background: #0a0d0e; border-radius: 3px;
-            position: relative; overflow: hidden; border: 1px solid #000;
+        /* reserved space above a channel strip's percentage box, so strips
+           with and without a trim-slider still line up */
+        .ctrl-slot { width: 100%; min-height: 22px; margin-bottom: 5px; }
+
+        /* ---------- dashboard layout ----------
+           .dash-grid fills whatever vertical space is left below the
+           transport bar (body is a 100vh flex column, see above), at a
+           fixed/natural width. .dash-left holds two rows: the channel-strip
+           row sizes to its own content at the top, and the monitor/network
+           row (.dash-row-fill) grows to fill the rest of the height — so
+           Studio Return/News reach down to the same bottom edge as
+           .dash-right. .dash-right holds the two "at a glance" hero
+           elements — the clock and Broadcast Mix — side by side, each
+           stretched to the full height of the row so they match. All of
+           these meters then fill whatever height they end up with (see
+           .db-track below) rather than depending on fixed pixel heights
+           that may not add up on every browser/zoom level. */
+        .dash-grid { display: flex; gap: 12px; align-items: stretch; flex: 1 1 auto; min-height: 0; }
+        .dash-left {
+            flex: 0 0 auto; min-height: 0;
+            display: flex; flex-direction: column; gap: 8px;
+        }
+        .dash-right { flex: 1 1 auto; min-width: 0; min-height: 0; display: flex; gap: 12px; }
+        .dash-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch; }
+        /* Monitor/network row: grows to fill whatever height is left below
+           the channel-strip row, down to the same bottom edge as the clock
+           and Broadcast Mix — Studio Return/News stretch into that space
+           (see .db-track.sz-sm below); Monitor opts out and stays compact. */
+        .dash-row-fill { flex: 1 1 auto; min-height: 0; }
+
+        /* channel strips — Mic / Line In / News / Console: just a % readout */
+        .module.chstrip { width: 112px; }
+        .pct-box {
+            width: 100%; background: #0a0d0e; border: 1px solid #000; border-radius: 4px;
             box-shadow: inset 0 2px 6px rgba(0,0,0,0.6);
+            display: flex; align-items: baseline; justify-content: center; gap: 2px;
+            padding: 6px 0;
         }
-        .fader-fill {
-            position: absolute; bottom: 0; width: 100%;
-            background: linear-gradient(to top, #1565c0 0%, #1e88c9 55%, #ffb000 82%, #ff4d4d 100%);
-            transition: height 0.12s linear;
-        }
-        .fader-cap {
-            position: absolute; left: -4px; right: -4px; height: 5px;
-            background: #eef3f5; border-radius: 1px; box-shadow: 0 1px 3px rgba(0,0,0,0.6);
-            transition: bottom 0.12s linear;
-        }
-        .fader-readout { margin-top: 8px; font-family: var(--font-num); font-size: 12px; font-weight: 700; color: #eef3f5; }
-        .fader-readout .unit { font-size: 8.5px; color: var(--ink-dim); font-weight: 400; margin-left: 2px; }
-        .module.at-rest .mod-label { color: var(--ink-faint); }
-        .module.at-rest .fader-readout { color: var(--ink-faint); }
+        .pct-box .pct-num { font-family: var(--font-num); font-size: 19px; font-weight: 700; color: #eef3f5; line-height: 1; }
+        .pct-box .pct-unit { font-size: 9px; color: var(--ink-dim); font-weight: 400; }
+        .module.at-rest .pct-box .pct-num { color: var(--ink-faint); }
 
-        /* mic gain (no trim rescale — real hardware preamp) */
-        .mic-gain-block { width: 100%; }
+        /* monitor controls card — Headphones / Speaker, horizontal sliders.
+           Opts out of .dash-row-fill's stretch (align-self) so it stays
+           compact while Studio Return/News (siblings in the same row)
+           grow tall — see .db-track.sz-sm below. */
+        .module.ctrl-card { width: 150px; justify-content: center; align-self: flex-start; }
+        .mini-row { width: 100%; }
+        .mini-row + .mini-row { margin-top: 9px; }
 
-        /* reserved space above every bar/track so they all start at the same height,
-           whether or not a strip has a trim/gain control row */
-        .ctrl-slot { width: 100%; min-height: 40px; margin-bottom: 8px; }
-
-        /* dBFS meter (real signal — master / studio-return / news) */
-        .db-meter-row { display: flex; gap: 6px; justify-content: center; flex: 1 1 auto; align-items: flex-start; }
+        /* dBFS meters (real signal — studio return / news / broadcast mix)
+           The track carries a fixed green/amber/red gradient anchored to its
+           own full height. A dark overlay (.db-fill) slides down from the
+           top as the level rises, revealing only the active portion — so
+           colour thresholds sit at fixed dB positions instead of stretching
+           with the current level. */
+        .db-meter-row { display: flex; gap: 8px; justify-content: center; flex: 1 1 auto; min-height: 0; align-items: stretch; }
         .db-meter-col { display: flex; flex-direction: column; align-items: center; }
         .db-track {
-            width: 24px; height: 210px; background: #0a0d0e; border-radius: 3px; border: 1px solid #000;
+            border-radius: 3px; border: 1px solid #000;
             position: relative; overflow: hidden; box-shadow: inset 0 2px 6px rgba(0,0,0,0.6);
+            background: linear-gradient(to top,
+                var(--green) 0%, var(--green) 70%,
+                var(--amber) 70%, var(--amber) 85%,
+                var(--red) 85%, var(--red) 100%);
         }
-        .db-fill { position: absolute; bottom: 0; width: 100%; transition: height 0.1s linear; }
-        .db-fill.tx { background: linear-gradient(to top, #1565c0 70%, #42a5f5 88%, #e3f2fd 100%); }
-        .db-fill.rx { background: linear-gradient(to top, #1f8a57 70%, #ffb000 87%, #ff4d4d 100%); }
+        /* Both sizes fill whatever height their card ends up with, rather
+           than a guessed px value: sz-sm's card (Studio Return / News)
+           stretches down .dash-row-fill to match the clock/Broadcast Mix
+           row's bottom edge; sz-lg's card (Broadcast Mix) fills .dash-right
+           the same way. Width stays fixed per size — only height flexes. */
+        .db-track.sz-sm { width: 16px; flex: 1 1 auto; min-height: 0; }
+        .db-track.sz-lg { width: 64px; flex: 1 1 auto; min-height: 0; }
+        .module.master .db-meter-row { gap: 28px; }
+        .db-fill { position: absolute; top: 0; left: 0; right: 0; height: 100%; background: #0a0d0e; transition: height 0.1s linear; }
         .db-track::after {
             content: ''; position: absolute; left: 0; right: 0; bottom: 70%; height: 1px;
-            background: rgba(255,255,255,0.28);
+            background: rgba(255,255,255,0.28); z-index: 1;
         }
-        .db-chan-label { font-size: 8px; color: var(--ink-faint); margin-top: 4px; letter-spacing: 0.05em; }
-        .db-readout { font-family: var(--font-num); font-size: 10px; color: var(--ink-dim); margin-top: 6px; text-align: center; }
+        .db-chan-label { font-size: 8px; color: var(--ink-faint); margin-top: 4px; letter-spacing: 0.05em; flex-shrink: 0; }
+        .db-readout { font-family: var(--font-num); font-size: 10px; color: var(--ink-dim); margin-top: 5px; text-align: center; flex-shrink: 0; }
 
-        /* vertical monitor sliders (headphone / speaker) */
-        .vfader-wrap { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; height: 210px; }
-        input[type=range].vfader {
-            -webkit-appearance: none; appearance: none; width: 210px; height: 26px;
-            transform: rotate(-90deg);
-            background: transparent;
-        }
-        input[type=range].vfader::-webkit-slider-runnable-track { height: 6px; background: #0a0d0e; border-radius: 3px; border: 1px solid #000; }
-        input[type=range].vfader::-webkit-slider-thumb {
-            -webkit-appearance: none; width: 30px; height: 14px; border-radius: 2px; margin-top: -4px;
-            background: linear-gradient(180deg, #eef3f5, #b7c2c6); box-shadow: 0 1px 3px rgba(0,0,0,0.6);
-            cursor: pointer;
-        }
-        input[type=range].vfader::-moz-range-track { height: 6px; background: #0a0d0e; border-radius: 3px; border: 1px solid #000; }
-        input[type=range].vfader::-moz-range-thumb {
-            width: 30px; height: 14px; border-radius: 2px; background: #eef3f5; border: none;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.6);
-        }
-        .vfader-accent-cyan::-webkit-slider-thumb { background: linear-gradient(180deg, #baf6ff, #00b8cc); }
-        .vfader-accent-blue::-webkit-slider-thumb { background: linear-gradient(180deg, #bcd8ff, #2f7bd6); }
+        /* small network-channel cards — Studio Return / News */
+        .module.net-chan { width: 122px; }
 
-        .pfl-level-row { width: 100%; }
+        /* Broadcast Mix — the most important reading, largest on the page.
+           Sits beside the clock in .dash-right, matched in height. Sized to
+           its own content (the meters stay a fixed width, see .db-track.sz-lg)
+           rather than flex-growing — .module.clock-card takes all the
+           leftover width instead, so there's no dead space either side. */
+        .module.master { flex: 0 0 auto; height: 100%; min-height: 0; padding: 8px 14px 8px; }
+        .module.master .mod-label { font-size: 14px; }
+        .module.master .mod-sub { margin-bottom: 4px; }
+        .module.master .db-chan-label { font-size: 10px; }
+        .module.master .db-readout { font-size: 15px; font-weight: 600; color: #eef3f5; margin-top: 7px; }
 
         .not-goxlr-note {
             font-family: var(--font-num); font-size: 10px; color: var(--ink-faint); text-align: center;
             padding: 20px 6px;
         }
-        @media (max-width: 760px) {
-            .module { width: 46%; }
-            .module.wide, .module.pair { width: 96%; }
+
+        /* ---------- clock cluster (ported from marlowfm-screen's OB monitor) ----------
+           Grows to fill whatever width Broadcast Mix (content-sized, see
+           .module.master above) doesn't use. */
+        .module.clock-card {
+            flex: 1 1 auto; min-width: 0; height: 100%; min-height: 0;
+            display: flex; flex-direction: column; align-items: center; justify-content: center; gap: clamp(6px, 2vh, 18px);
+            padding: 10px 14px;
+        }
+        .clk-date {
+            font-family: var(--font-label); font-weight: 600; letter-spacing: 0.03em;
+            font-size: clamp(15px, 2.2vw, 28px); color: #eef3f5; text-align: center; flex-shrink: 0;
+        }
+        .clk-canvas { width: min(340px, 22vw, 36vh); height: min(340px, 22vw, 36vh); flex-shrink: 1; }
+        .clk-digital {
+            font-family: var(--font-num); font-weight: 700; letter-spacing: 0.03em;
+            font-size: clamp(30px, 4.8vw, 64px); color: var(--cyan); text-shadow: 0 0 14px #00e5ff4d;
+            line-height: 1; flex-shrink: 0;
+        }
+        .clk-words {
+            font-family: var(--font-label); font-weight: 600; letter-spacing: 0.03em;
+            font-size: clamp(13px, 1.7vw, 21px); color: var(--amber); text-align: center; flex-shrink: 0;
+        }
+
+        @media (max-width: 980px) {
+            .dash-grid { flex-direction: column; }
+            .dash-left { flex: 0 0 auto; }
+            .dash-right { flex: 1 1 auto; }
+        }
+        @media (max-width: 700px) {
+            .dash-right { flex-direction: column; }
+            .module.clock-card { flex: 0 0 auto; }
+        }
+        @media (max-width: 560px) {
+            .module.chstrip, .module.net-chan, .module.ctrl-card { width: 46%; flex: 1 1 auto; }
         }
     </style>
 </head>
@@ -298,131 +368,129 @@
     </div>
 
     <div class="transport">
-        <input type="text" id="field-ip" placeholder="Field unit IP (blank = remote sender)">
-        <button class="btn btn-start" onclick="connectLink()">Connect Link</button>
-        <button class="btn btn-stop" onclick="fetch('/api/disconnect', {method:'POST'})">Disconnect</button>
+        <button class="btn btn-solid-green" id="btn-connect" onclick="connectLink()">Connect Link</button>
+        <button class="btn btn-muted" id="btn-disconnect" onclick="fetch('/api/disconnect', {method:'POST'})">Disconnect</button>
         <div class="spacer"></div>
         <a id="goxlr-ui-link" class="link-out" href="#" target="_blank" rel="noopener noreferrer">GoXLR Utility ↗</a>
     </div>
 
-    <div class="rack">
+    <div class="dash-grid">
+        <div class="dash-left">
 
-        <!-- MIC -->
-        <div class="module" id="strip-Mic">
-            <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
-            <div class="mod-label">Mic</div>
-            <div class="mod-sub">Fader A</div>
-            <div class="mic-gain-block ctrl-slot">
-                <div class="trim-row"><span class="trim-title">Preamp Gain</span><span class="trim-val" id="val-mic-gain">50 dB</span></div>
-                <input type="range" class="trim-slider" id="slider-mic-gain" min="0" max="72" value="50" oninput="onMicGainInput(this.value)">
-            </div>
-            <div class="fader-track-wrap">
-                <div class="fader-track"><div class="fader-fill" id="fader-Mic"></div><div class="fader-cap" id="cap-Mic"></div></div>
-                <div class="fader-readout"><span id="readout-Mic">0</span><span class="unit">%</span></div>
-            </div>
-        </div>
-
-        <!-- LINE IN -->
-        <div class="module" id="strip-LineIn">
-            <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
-            <div class="mod-label">Line In</div>
-            <div class="mod-sub">Fader B &middot; Guest Mic</div>
-            <div class="ctrl-slot"></div>
-            <div class="fader-track-wrap">
-                <div class="fader-track"><div class="fader-fill" id="fader-LineIn"></div><div class="fader-cap" id="cap-LineIn"></div></div>
-                <div class="fader-readout"><span id="readout-LineIn">0</span><span class="unit">%</span></div>
-            </div>
-        </div>
-
-        <!-- GAME / NEWS -->
-        <div class="module" id="strip-Game">
-            <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
-            <div class="mod-label">News</div>
-            <div class="mod-sub">Fader C &middot; Codec RX-R</div>
-            <div class="ctrl-slot"></div>
-            <div class="fader-track-wrap">
-                <div class="fader-track"><div class="fader-fill" id="fader-Game"></div><div class="fader-cap" id="cap-Game"></div></div>
-                <div class="fader-readout"><span id="readout-Game">0</span><span class="unit">%</span></div>
-            </div>
-        </div>
-
-        <!-- CONSOLE -->
-        <div class="module" id="strip-Console">
-            <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
-            <div class="mod-label">Console</div>
-            <div class="mod-sub">Fader D &middot; Music Player</div>
-            <div class="ctrl-slot"></div>
-            <div class="fader-track-wrap">
-                <div class="fader-track"><div class="fader-fill" id="fader-Console"></div><div class="fader-cap" id="cap-Console"></div></div>
-                <div class="fader-readout"><span id="readout-Console">0</span><span class="unit">%</span></div>
-            </div>
-        </div>
-
-        <!-- HEADPHONES -->
-        <div class="module" id="strip-hp" style="display:none;">
-            <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
-            <div class="mod-label">Headphones</div>
-            <div class="mod-sub">Operator monitor</div>
-            <div class="ctrl-slot"></div>
-            <div class="vfader-wrap">
-                <input type="range" class="vfader vfader-accent-cyan" id="hp-vol-slider" min="0" max="100" value="100" oninput="onHpVolInput(this.value)">
-            </div>
-            <div class="fader-readout"><span id="hp-vol-label">100</span><span class="unit">%</span></div>
-        </div>
-
-        <!-- SPEAKER -->
-        <div class="module" id="strip-speaker">
-            <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
-            <div class="mod-label">Speaker</div>
-            <div class="mod-sub">Line out master</div>
-            <div class="ctrl-slot"></div>
-            <div class="vfader-wrap">
-                <input type="range" class="vfader vfader-accent-blue" id="rx-vol-slider" min="0" max="100" value="100" oninput="onRxVolInput(this.value)">
-            </div>
-            <div class="fader-readout"><span id="rx-vol-label">100</span><span class="unit">%</span></div>
-        </div>
-
-        <!-- STUDIO RETURN / NEWS network signal -->
-        <div class="module pair" id="strip-network">
-            <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
-            <div class="mod-label">Incoming Network</div>
-            <div class="mod-sub">Pre-GoXLR &middot; always live</div>
-            <div class="pfl-level-row ctrl-slot">
-                <div class="trim-row"><span class="trim-title" style="color:var(--cyan);">PFL Monitor Level</span><span class="trim-val" id="val-studio-return-level" style="color:var(--cyan);">48%</span></div>
-                <input type="range" class="trim-slider" id="slider-studio-return" min="0" max="100" value="48" oninput="onStudioReturnInput(this.value)" style="background-image:none;">
-            </div>
-            <div class="db-meter-row">
-                <div class="db-meter-col">
-                    <div class="db-track"><div class="db-fill rx" id="meter-studio-return"></div></div>
-                    <div class="db-chan-label">STUDIO<br>RETURN</div>
+            <!-- CHANNEL STRIPS -->
+            <div class="dash-row">
+                <div class="module chstrip" id="strip-Mic">
+                    <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
+                    <div class="mod-label">Mic</div>
+                    <div class="mod-sub">Fader A</div>
+                    <div class="ctrl-slot">
+                        <div class="trim-row"><span class="trim-title">Preamp Gain</span><span class="trim-val" id="val-mic-gain">50 dB</span></div>
+                        <input type="range" class="trim-slider" id="slider-mic-gain" min="0" max="72" value="50" oninput="onMicGainInput(this.value)">
+                    </div>
+                    <div class="pct-box"><span class="pct-num" id="readout-Mic">0</span><span class="pct-unit">%</span></div>
                 </div>
-                <div class="db-meter-col">
-                    <div class="db-track"><div class="db-fill rx" id="meter-news"></div></div>
-                    <div class="db-chan-label">NEWS</div>
+
+                <div class="module chstrip" id="strip-LineIn">
+                    <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
+                    <div class="mod-label">Line In</div>
+                    <div class="mod-sub">Fader B &middot; Guest Mic</div>
+                    <div class="ctrl-slot"></div>
+                    <div class="pct-box"><span class="pct-num" id="readout-LineIn">0</span><span class="pct-unit">%</span></div>
+                </div>
+
+                <div class="module chstrip" id="strip-Game">
+                    <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
+                    <div class="mod-label">News</div>
+                    <div class="mod-sub">Fader C &middot; Codec RX-R</div>
+                    <div class="ctrl-slot"></div>
+                    <div class="pct-box"><span class="pct-num" id="readout-Game">0</span><span class="pct-unit">%</span></div>
+                </div>
+
+                <div class="module chstrip" id="strip-Console">
+                    <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
+                    <div class="mod-label">Console</div>
+                    <div class="mod-sub">Fader D &middot; Music Player</div>
+                    <div class="ctrl-slot"></div>
+                    <div class="pct-box"><span class="pct-num" id="readout-Console">0</span><span class="pct-unit">%</span></div>
                 </div>
             </div>
-            <div class="db-readout"><span id="lbl-studio-return-db">— dBFS</span> &nbsp;/&nbsp; <span id="lbl-news-db">— dBFS</span></div>
-        </div>
 
-        <!-- MASTER / BROADCAST MIX -->
-        <div class="module wide" id="strip-master">
-            <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
-            <div class="mod-label">Broadcast Mix</div>
-            <div class="mod-sub">On-air &middot; combined output</div>
-            <div class="ctrl-slot"></div>
-            <div class="db-meter-row">
-                <div class="db-meter-col">
-                    <div class="db-track"><div class="db-fill tx" id="meter-tx-l"></div></div>
-                    <div class="db-chan-label">L</div>
+            <!-- MONITOR CONTROLS + INCOMING NETWORK -->
+            <div class="dash-row dash-row-fill">
+                <div class="module ctrl-card">
+                    <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
+                    <div class="mod-label">Monitor</div>
+                    <div class="mod-sub">Headphones &amp; speaker</div>
+                    <div class="mini-row" id="row-hp" style="display:none;">
+                        <div class="trim-row"><span class="trim-title" style="color:var(--cyan);">Headphones</span><span class="trim-val" id="hp-vol-label" style="color:var(--cyan);">100</span></div>
+                        <input type="range" class="trim-slider accent-cyan" id="hp-vol-slider" min="0" max="100" value="100" oninput="onHpVolInput(this.value)">
+                    </div>
+                    <div class="mini-row">
+                        <div class="trim-row"><span class="trim-title" style="color:var(--blue);">Speaker</span><span class="trim-val" id="rx-vol-label" style="color:var(--blue);">100</span></div>
+                        <input type="range" class="trim-slider accent-blue" id="rx-vol-slider" min="0" max="100" value="100" oninput="onRxVolInput(this.value)">
+                    </div>
                 </div>
-                <div class="db-meter-col">
-                    <div class="db-track"><div class="db-fill tx" id="meter-tx-r"></div></div>
-                    <div class="db-chan-label">R</div>
+
+                <div class="module net-chan" id="strip-studio-return">
+                    <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
+                    <div class="mod-label">Studio Return</div>
+                    <div class="mod-sub">Pre-GoXLR &middot; always live</div>
+                    <div class="ctrl-slot">
+                        <div class="trim-row"><span class="trim-title" style="color:var(--cyan);">PFL Monitor Level</span><span class="trim-val" id="val-studio-return-level" style="color:var(--cyan);">48%</span></div>
+                        <input type="range" class="trim-slider accent-cyan" id="slider-studio-return" min="0" max="100" value="48" oninput="onStudioReturnInput(this.value)">
+                    </div>
+                    <div class="db-meter-row">
+                        <div class="db-meter-col">
+                            <div class="db-track sz-sm"><div class="db-fill" id="meter-studio-return"></div></div>
+                        </div>
+                    </div>
+                    <div class="db-readout" id="lbl-studio-return-db">— dBFS</div>
+                </div>
+
+                <div class="module net-chan" id="strip-news">
+                    <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
+                    <div class="mod-label">News</div>
+                    <div class="mod-sub">Pre-GoXLR &middot; always live</div>
+                    <div class="ctrl-slot"></div>
+                    <div class="db-meter-row">
+                        <div class="db-meter-col">
+                            <div class="db-track sz-sm"><div class="db-fill" id="meter-news"></div></div>
+                        </div>
+                    </div>
+                    <div class="db-readout" id="lbl-news-db">— dBFS</div>
                 </div>
             </div>
-            <div class="db-readout" id="lbl-tx-db">— dBFS</div>
+
         </div>
 
+        <!-- CLOCK + BROADCAST MIX — the two "at a glance" hero elements,
+             side by side and matched in height -->
+        <div class="dash-right">
+            <div class="module clock-card">
+                <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
+                <div class="clk-date" id="clk-date">—</div>
+                <canvas class="clk-canvas" id="clk-canvas" width="400" height="400"></canvas>
+                <div class="clk-digital" id="clk-digital">--:--:--</div>
+                <div class="clk-words" id="clk-words">Loading…</div>
+            </div>
+
+            <div class="module master" id="strip-master">
+                <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
+                <div class="mod-label">Broadcast Mix</div>
+                <div class="mod-sub">On-air &middot; combined output</div>
+                <div class="db-meter-row">
+                    <div class="db-meter-col">
+                        <div class="db-track sz-lg"><div class="db-fill" id="meter-tx-l"></div></div>
+                        <div class="db-chan-label">L</div>
+                    </div>
+                    <div class="db-meter-col">
+                        <div class="db-track sz-lg"><div class="db-fill" id="meter-tx-r"></div></div>
+                        <div class="db-chan-label">R</div>
+                    </div>
+                </div>
+                <div class="db-readout" id="lbl-tx-db">— dBFS</div>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -430,16 +498,17 @@
 
         function dbToPct(db) { return Math.max(0, Math.min(100, (db + 60) * 1.667)); }
         function pct255(v) { return Math.max(0, Math.min(100, (v / 255) * 100)); }
+        // Overlay (.db-fill) covers the track from the top; shrinking its
+        // height as the level rises reveals the fixed colour gradient below.
+        function setMeterFill(id, pct) {
+            document.getElementById(id).style.height = (100 - pct) + '%';
+        }
 
-        // ---------- fader-position strips (Mic / LineIn / Console / Game) ----------
+        // ---------- channel-strip percentage readouts (Mic / LineIn / Console / Game) ----------
         const FADER_CHANNELS = ['Mic', 'LineIn', 'Console', 'Game'];
         function updateFaderStrip(channel, value) {
             const pct = pct255(value);
-            const fill = document.getElementById('fader-' + channel);
-            const cap = document.getElementById('cap-' + channel);
             const readout = document.getElementById('readout-' + channel);
-            if (fill) fill.style.height = pct + '%';
-            if (cap) cap.style.bottom = `calc(${pct}% - 2px)`;
             if (readout) readout.textContent = Math.round(pct);
             const strip = document.getElementById('strip-' + channel);
             if (strip) strip.classList.toggle('at-rest', value <= 5);
@@ -459,7 +528,7 @@
             }, 150);
         }
 
-        // ---------- studio return PFL baseline level ----------
+        // ---------- studio return PFL monitor level ----------
         let studioReturnTimer = null, studioReturnDragging = false;
         function onStudioReturnInput(val) {
             studioReturnDragging = true;
@@ -500,11 +569,7 @@
         }
 
         function connectLink() {
-            const ip = document.getElementById('field-ip').value.trim();
-            fetch('/api/connect', {
-                method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: ip ? JSON.stringify({target_ip: ip}) : '{}'
-            });
+            fetch('/api/connect', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}' });
         }
 
         // ---------- network panel (auto show/hide on trouble) ----------
@@ -532,8 +597,8 @@
             }
         }
 
-        const ctx = document.getElementById('jitterChart').getContext('2d');
-        const jitterChart = typeof Chart === 'undefined' ? null : new Chart(ctx, {
+        const jitterCtx = document.getElementById('jitterChart').getContext('2d');
+        const jitterChart = typeof Chart === 'undefined' ? null : new Chart(jitterCtx, {
             type: 'line',
             data: { labels: Array(30).fill(''), datasets: [{
                 label: 'Rolling Jitter (ms)', data: Array(30).fill(0),
@@ -561,6 +626,10 @@
             document.getElementById('lbl-status').innerText = d.status;
             document.getElementById('status-pill').classList.toggle('live', live);
             document.getElementById('status-pill').classList.toggle('down', !live);
+            // Connect/Disconnect reflect current status: the button matching
+            // what's actually true right now is solid, the other is muted.
+            document.getElementById('btn-connect').className = 'btn ' + (live ? 'btn-solid-green' : 'btn-muted');
+            document.getElementById('btn-disconnect').className = 'btn ' + (live ? 'btn-muted' : 'btn-solid-red');
             document.getElementById('lbl-jitter').innerText = d.jitter;
             document.getElementById('lbl-lost').innerText = d.lost;
             document.getElementById('lbl-late').innerText = d.late;
@@ -571,19 +640,18 @@
                 jitterChart.update('none');
             }
 
-            // Broadcast Mix (master)
-            document.getElementById('meter-tx-l').style.height = dbToPct(d.tx_peak_l) + '%';
-            document.getElementById('meter-tx-r').style.height = dbToPct(d.tx_peak_r) + '%';
-            // Broadcast Mix is a local GoXLR signal, not network-fed — show it
-            // regardless of connection status (see CURRENT-STATUS.md's
-            // 2026-09-14 entry). Incoming Network below stays gated on `live`
-            // since it has no local source and is genuinely silent otherwise.
+            // Broadcast Mix (master) — a local GoXLR signal, not network-fed —
+            // shown regardless of connection status. Incoming Network below
+            // stays gated on `live` since it has no local source and is
+            // genuinely silent otherwise.
+            setMeterFill('meter-tx-l', dbToPct(d.tx_peak_l));
+            setMeterFill('meter-tx-r', dbToPct(d.tx_peak_r));
             const txPeak = Math.max(d.tx_peak_l, d.tx_peak_r);
             document.getElementById('lbl-tx-db').innerText = txPeak.toFixed(1) + ' dBFS';
 
             // Incoming network: Studio Return (was RX-L) / News (was RX-R)
-            document.getElementById('meter-studio-return').style.height = dbToPct(d.rx_peak_l) + '%';
-            document.getElementById('meter-news').style.height = dbToPct(d.rx_peak_r) + '%';
+            setMeterFill('meter-studio-return', dbToPct(d.rx_peak_l));
+            setMeterFill('meter-news', dbToPct(d.rx_peak_r));
             document.getElementById('lbl-studio-return-db').innerText = live ? d.rx_peak_l.toFixed(1) + ' dBFS' : '— dBFS';
             document.getElementById('lbl-news-db').innerText = live ? d.rx_peak_r.toFixed(1) + ' dBFS' : '— dBFS';
 
@@ -593,7 +661,7 @@
                 const isGoxlr = d.audio_interface === 'GoXLR';
                 badge.textContent = d.audio_interface.toUpperCase();
                 badge.className = 'badge ' + (isGoxlr ? 'badge-goxlr' : 'badge-behringer');
-                document.getElementById('strip-hp').style.display = isGoxlr ? 'flex' : 'none';
+                document.getElementById('row-hp').style.display = isGoxlr ? 'block' : 'none';
             }
 
             // Channel-strip fader positions
@@ -610,7 +678,7 @@
                 document.getElementById('val-mic-gain').textContent = d.mic_gain + ' dB';
             }
 
-            // Studio return PFL baseline level
+            // Studio return PFL monitor level
             if (d.studio_return_level != null && !studioReturnDragging) {
                 const pct = Math.round(d.studio_return_level * 100 / 255);
                 document.getElementById('slider-studio-return').value = pct;
@@ -630,6 +698,171 @@
         };
         }
         connectTelemetry();
+
+        // ---------- clock cluster (ported from marlowfm-screen's OB monitor) ----------
+        // Station time is derived from Europe/London via Intl rather than the
+        // viewing device's own clock/timezone, so it stays correct through
+        // GMT/BST transitions regardless of how the display machine is set up.
+        const STATION_TIME_ZONE = 'Europe/London';
+        const stationTimeFormatter = new Intl.DateTimeFormat('en-GB', {
+            timeZone: STATION_TIME_ZONE, weekday: 'short', year: 'numeric', month: '2-digit',
+            day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+        });
+        function stationTimeParts(date = new Date()) {
+            const values = {};
+            for (const part of stationTimeFormatter.formatToParts(date)) {
+                if (part.type !== 'literal') values[part.type] = part.value;
+            }
+            return {
+                weekday: values.weekday, year: Number(values.year), month: Number(values.month),
+                day: Number(values.day), hour: Number(values.hour), minute: Number(values.minute),
+                second: Number(values.second),
+            };
+        }
+
+        function pad2(n) { return String(n).padStart(2, '0'); }
+
+        const NUMBER_WORDS = [
+            'Zero','One','Two','Three','Four','Five','Six',
+            'Seven','Eight','Nine','Ten','Eleven','Twelve',
+            'Thirteen','Fourteen','Fifteen','Sixteen','Seventeen',
+            'Eighteen','Nineteen','Twenty','Twenty-One','Twenty-Two',
+            'Twenty-Three','Twenty-Four','Twenty-Five','Twenty-Six',
+            'Twenty-Seven','Twenty-Eight','Twenty-Nine','Thirty',
+            'Thirty-One','Thirty-Two','Thirty-Three','Thirty-Four',
+            'Thirty-Five','Thirty-Six','Thirty-Seven','Thirty-Eight',
+            'Thirty-Nine','Forty','Forty-One','Forty-Two','Forty-Three',
+            'Forty-Four','Forty-Five','Forty-Six','Forty-Seven',
+            'Forty-Eight','Forty-Nine','Fifty','Fifty-One',
+            'Fifty-Two','Fifty-Three','Fifty-Four','Fifty-Five',
+            'Fifty-Six','Fifty-Seven','Fifty-Eight','Fifty-Nine',
+        ];
+        function getTimePhrase(h, m) {
+            if (m === 0)  return `${NUMBER_WORDS[h]} O'Clock`;
+            if (m === 15) return `Quarter Past ${NUMBER_WORDS[h]}`;
+            if (m === 30) return `Half Past ${NUMBER_WORDS[h]}`;
+            if (m === 45) return `Quarter To ${NUMBER_WORDS[(h % 12) + 1]}`;
+            if (m <= 30) {
+                return (m % 5 === 0)
+                    ? `${NUMBER_WORDS[m]} Past ${NUMBER_WORDS[h]}`
+                    : `${NUMBER_WORDS[m]} Minutes Past ${NUMBER_WORDS[h]}`;
+            }
+            const rem = 60 - m;
+            return (rem % 5 === 0)
+                ? `${NUMBER_WORDS[rem]} To ${NUMBER_WORDS[(h % 12) + 1]}`
+                : `${NUMBER_WORDS[rem]} Minutes To ${NUMBER_WORDS[(h % 12) + 1]}`;
+        }
+        function timeInWords(hour, m) {
+            const h = hour % 12 || 12;
+            if ((m + 1) % 5 === 0) {
+                let nm = m + 1, nh = h;
+                if (nm === 60) { nm = 0; nh = (h % 12) + 1; if (nh === 13) nh = 1; }
+                return `Nearly ${getTimePhrase(nh, nm)}`;
+            }
+            if (m % 5 === 1) return `Just After ${getTimePhrase(h, m - 1)}`;
+            return getTimePhrase(h, m);
+        }
+
+        const CLK_DAYS   = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+        const CLK_MONTHS = ['January','February','March','April','May','June',
+                             'July','August','September','October','November','December'];
+        function ordinal(d) {
+            if (d > 3 && d < 21) return 'th';
+            switch (d % 10) { case 1: return 'st'; case 2: return 'nd'; case 3: return 'rd'; default: return 'th'; }
+        }
+
+        const clkCanvas = document.getElementById('clk-canvas');
+        const clkCtx = clkCanvas.getContext('2d');
+        const CLK_CX = 200, CLK_CY = 200, CLK_R = 192;
+        let _prevSecAngle = null;
+
+        function drawHand(angle, length, width, color) {
+            clkCtx.save();
+            clkCtx.translate(CLK_CX, CLK_CY);
+            clkCtx.rotate(angle);
+            clkCtx.beginPath();
+            clkCtx.moveTo(0, length * 0.15);
+            clkCtx.lineTo(0, -length);
+            clkCtx.lineWidth = width;
+            clkCtx.strokeStyle = color;
+            clkCtx.lineCap = 'round';
+            clkCtx.stroke();
+            clkCtx.restore();
+        }
+
+        function drawClock(h, m, s, ms) {
+            clkCtx.clearRect(0, 0, clkCanvas.width, clkCanvas.height);
+
+            clkCtx.beginPath();
+            clkCtx.arc(CLK_CX, CLK_CY, CLK_R, 0, Math.PI * 2);
+            clkCtx.fillStyle = '#ffffff';
+            clkCtx.fill();
+            clkCtx.lineWidth = 10;
+            clkCtx.strokeStyle = '#ea384c';
+            clkCtx.stroke();
+
+            for (let i = 0; i < 60; i++) {
+                const a = (i / 60) * Math.PI * 2 - Math.PI / 2;
+                const len = (i % 5 === 0) ? 16 : 7;
+                const lw = (i % 5 === 0) ? (i % 15 === 0 ? 3.5 : 2) : 1;
+                clkCtx.beginPath();
+                clkCtx.moveTo(CLK_CX + (CLK_R - 4) * Math.cos(a), CLK_CY + (CLK_R - 4) * Math.sin(a));
+                clkCtx.lineTo(CLK_CX + (CLK_R - 4 - len) * Math.cos(a), CLK_CY + (CLK_R - 4 - len) * Math.sin(a));
+                clkCtx.strokeStyle = '#555';
+                clkCtx.lineWidth = lw;
+                clkCtx.stroke();
+            }
+
+            const numR = Math.round(CLK_R * 0.78), fontSize = Math.round(CLK_R * 0.15);
+            clkCtx.font = `bold ${fontSize}px Segoe UI, sans-serif`;
+            clkCtx.fillStyle = '#222';
+            clkCtx.textAlign = 'center';
+            clkCtx.textBaseline = 'middle';
+            for (let i = 1; i <= 12; i++) {
+                const a = (i / 12) * Math.PI * 2 - Math.PI / 2;
+                clkCtx.fillText(String(i), CLK_CX + numR * Math.cos(a), CLK_CY + numR * Math.sin(a));
+            }
+
+            const hAngle = ((h % 12 + m / 60 + s / 3600) / 12) * Math.PI * 2;
+            const minAngle = ((m + s / 60) / 60) * Math.PI * 2;
+            let secAngle = ((s + ms / 1000) / 60) * Math.PI * 2;
+            if (_prevSecAngle !== null) {
+                while (secAngle < _prevSecAngle - Math.PI) secAngle += Math.PI * 2;
+            }
+            _prevSecAngle = secAngle;
+
+            drawHand(hAngle, CLK_R * 0.50, 11, '#111');
+            drawHand(minAngle, CLK_R * 0.74, 7, '#111');
+            drawHand(secAngle, CLK_R * 0.84, 3, '#ea384c');
+
+            clkCtx.beginPath();
+            clkCtx.arc(CLK_CX, CLK_CY, 8, 0, Math.PI * 2);
+            clkCtx.fillStyle = '#ea384c';
+            clkCtx.fill();
+        }
+
+        let _clkRafOrigin = null;
+        let _clkStationTime = null;
+        function clockTick(rafTs) {
+            const wall = new Date();
+            if (!_clkRafOrigin || wall.getSeconds() !== new Date(_clkRafOrigin.wallMs).getSeconds()) {
+                _clkRafOrigin = { rafTs, wallMs: wall.getTime() };
+                _clkStationTime = stationTimeParts(wall);
+            }
+
+            const now = new Date(_clkRafOrigin.wallMs + (rafTs - _clkRafOrigin.rafTs));
+            const time = _clkStationTime;
+            const h = time.hour, m = time.minute, s = time.second, ms = now.getMilliseconds(), d = time.day;
+
+            document.getElementById('clk-date').textContent =
+                `${CLK_DAYS[time.weekday === 'Sun' ? 0 : ['Mon','Tue','Wed','Thu','Fri','Sat'].indexOf(time.weekday) + 1]} ${d}${ordinal(d)} ${CLK_MONTHS[time.month - 1]} ${time.year}`;
+            document.getElementById('clk-words').textContent = timeInWords(h, m);
+            document.getElementById('clk-digital').textContent = `${pad2(h)}:${pad2(m)}:${pad2(s)}`;
+
+            drawClock(h, m, s, ms);
+            requestAnimationFrame(clockTick);
+        }
+        requestAnimationFrame(clockTick);
     </script>
 </body>
 </html>
