@@ -204,6 +204,16 @@ class PipelineController:
         self.glib_loop   = GLib.MainLoop()
         self.last_rx_packet = 0.0
         self._last_tx_sample = 0.0
+        # PTS fed to rx_appsrc, in nanoseconds. Must live on the instance,
+        # not as a local in _playout_loop(): stop()/start() spawn a fresh
+        # playout thread on every reconnect but never rebuild rx_pipeline/
+        # rx_appsrc (see begin_local()'s docstring — only full_stop()+a new
+        # PipelineController instance does that, which is when this should
+        # actually go back to 0). A local variable resetting to 0 on each
+        # new thread would push buffers with PTS far behind the appsrc's
+        # already-advanced internal segment, corrupting the AAC/SBR decoder
+        # state for an extended period after every plain reconnect.
+        self.rx_pts = 0
 
         # Ground truth for "does the currently-built RX pipeline actually
         # include an extra source (e.g. the Behringer)?" — set on every
@@ -472,6 +482,9 @@ class PipelineController:
             old.get_state(Gst.SECOND)          # block until audio device is released
             self.rx_pipeline, self.rx_appsrc = self._build_rx_pipeline(mode)
             self.rx_pipeline.set_state(Gst.State.PLAYING)
+            # Fresh appsrc, fresh segment — see the self.rx_pts comment in
+            # __init__ for why this must track the appsrc's own lifetime.
+            self.rx_pts = 0
 
     def _on_tx_sample(self, appsink):
         sample = appsink.emit("pull-sample")
@@ -586,7 +599,6 @@ class PipelineController:
                 logger.warning(f"Playout thread: could not raise scheduling priority ({e}) — see BUILD.md §7")
 
         FRAME_DUR = Gst.SECOND * _AAC_FRAME // _AAC_SAMP
-        rx_pts    = 0
         last_good = None
 
         while self.is_active:
@@ -600,15 +612,20 @@ class PipelineController:
                 last_good = payload
 
             if not payload:
-                rx_pts += FRAME_DUR
+                self.rx_pts += FRAME_DUR
                 continue
 
             buf          = Gst.Buffer.new_wrapped(payload)
-            buf.pts      = rx_pts
             buf.duration = FRAME_DUR
-            rx_pts      += FRAME_DUR
 
+            # pts read/increment shares the rebuild lock with the appsrc
+            # emit below: _do_rx_rebuild() resets self.rx_pts for a brand
+            # new appsrc/segment under the same lock, so a mode-change
+            # rebuild can never land between "read rx_pts" and "push this
+            # buffer" and hand the new appsrc a stale, already-advanced pts.
             with self._rx_rebuild_lock:
+                buf.pts = self.rx_pts
+                self.rx_pts += FRAME_DUR
                 ret = self.rx_appsrc.emit("push-buffer", buf)
             if ret != Gst.FlowReturn.OK:
                 logger.warning(f"appsrc push: {ret}")
