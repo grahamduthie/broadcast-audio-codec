@@ -25,7 +25,6 @@ _PFL_COLOUR      = "FF8800"  # orange — studio return PFL active
 _NORMAL_COLOUR   = "00FFFF"  # cyan   — normal
 _PICKUP_COLOUR   = "FFB000"  # amber — logical level restored; physical position unverified
 _GRADIENT_TOP_COLOUR = "FF0000"  # red — fixed top-of-strip anchor for the low/high gradient
-_MONITOR_CUT_ARMED_COLOUR   = "00FF00"  # green — Studio Monitor Cut armed, Line Out currently live
 _MONITOR_CUT_CUTTING_COLOUR = "FF0000"  # red   — Studio Monitor Cut armed and actively muting Line Out
 _MUTE_ENGAGED_COLOUR = "FF0000"  # red   — channel mute button pressed, full brightness regardless of fader
 _MUTE_OPEN_COLOUR    = "00FF00"  # green — unmuted, fader open past the Line Out mute threshold, full brightness
@@ -683,7 +682,9 @@ class GoXLRInterface(AudioInterface):
         elif self._monitor_cut_active():
             colour = _MONITOR_CUT_CUTTING_COLOUR
         else:
-            colour = _MONITOR_CUT_ARMED_COLOUR
+            # Armed but not yet cutting: same orange as Bleep shows for an
+            # engaged studio return PFL, rather than a colour of its own.
+            colour = _PFL_COLOUR
         self._cmd({"SetButtonColours": ["Cough", colour, colour]})
 
     def get_headphone_volume(self) -> int:
