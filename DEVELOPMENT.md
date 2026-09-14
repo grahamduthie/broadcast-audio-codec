@@ -28,13 +28,13 @@ Make your changes directly on the running unit:
 ```bash
 ssh marlowfm@172.16.10.213
 
-# Edit files
-nano /opt/briclite/briclite/main.py
-nano /opt/briclite/briclite/core/pipeline_manager.py
+# Edit files (the live PSA checkout is flat under /opt/briclite)
+nano /opt/briclite/main.py
+nano /opt/briclite/core/pipeline_manager.py
 
 # Test the changes
 sudo systemctl restart briclite
-curl http://localhost:8080/api/connect
+curl http://localhost/api/connect
 # Verify the feature works...
 
 # Commit to local repo
@@ -53,8 +53,8 @@ Description of what this does and why."
 cd /Users/gduthie/Programming/Codec
 
 # Copy the modified files from PSA300
-scp marlowfm@172.16.10.213:/opt/briclite/briclite/main.py briclite/
-scp marlowfm@172.16.10.213:/opt/briclite/briclite/core/pipeline_manager.py briclite/core/
+scp marlowfm@172.16.10.213:/opt/briclite/main.py briclite/
+scp marlowfm@172.16.10.213:/opt/briclite/core/pipeline_manager.py briclite/core/
 
 # Or clone/pull if you set up a git remote on PSA300
 ```

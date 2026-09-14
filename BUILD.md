@@ -285,8 +285,8 @@ Restart=on-failure
 RestartSec=5
 User=codec
 Environment=GST_DEBUG=2
-AmbientCapabilities=CAP_SYS_NICE
-CapabilityBoundingSet=CAP_SYS_NICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_SYS_NICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SYS_NICE CAP_SETUID CAP_SETGID
 LimitRTPRIO=20
 LogRateLimitIntervalSec=30s
 LogRateLimitBurst=1000
@@ -299,6 +299,30 @@ WantedBy=multi-user.target
 sudo systemctl daemon-reload
 sudo systemctl enable --now briclite.service
 ```
+
+To enable the dashboard's guarded PSA300 shutdown button, install its
+narrowly-scoped sudo rule and validate it before starting the service:
+
+```bash
+sudo install -o root -g root -m 0440 systemd/briclite-poweroff.sudoers \
+  /etc/sudoers.d/briclite-poweroff
+sudo visudo -cf /etc/sudoers.d/briclite-poweroff
+```
+
+`CAP_SETUID` and `CAP_SETGID` in `CapabilityBoundingSet` are required even
+though the service remains unprivileged: sudo needs them to transition to
+root for the single allowed `systemctl poweroff` command. After changing the
+unit, run `sudo systemctl daemon-reload` and restart the service. Verify the
+rule without powering off with:
+
+```bash
+sudo -n -l -U marlowfm | grep '/usr/bin/systemctl poweroff'
+```
+
+On the live PSA300 the checkout is flat under `/opt/briclite` and its real
+dashboard port is 80; the sanitized local checkout uses the `briclite/`
+subdirectory and example configuration values. Do not assume the older
+nested deployment paths or port 8080 when deploying to the live unit.
 
 `GST_DEBUG=2` keeps GStreamer error and warning messages visible in `journalctl`. Remove it once the unit is stable in production.
 

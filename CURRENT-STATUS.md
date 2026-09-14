@@ -2,6 +2,23 @@
 
 This is the handoff document for the live residual RX-audio glitch investigation, started 2026-09-09. Read this before resuming tests on the PSA300 — start with the most recent dated section below and work backward; older sections are historical record. For the full technical deep-dive specifically on the USB/audio glitch (not the overnight-flood or bug-fixing threads), see `USB-AUDIO-GLITCH.md`.
 
+## Update — 2026-09-14: PSA300 shutdown control deployed; first attempt exposed systemd capability issue
+
+Graham requested a safe way for operators to shut down the PSA300 from the Broadcast Audio Codec dashboard instead of pulling power. The control is now deployed live on `marlowfm@172.16.10.213` (`/opt/briclite`): a red **Shut Down PSA** button sits beside **GoXLR Utility**, opens a confirmation dialog, and calls `POST /api/shutdown` only after confirmation. The endpoint waits briefly so the HTTP response can return, stops the local pipeline with `controller.full_stop()`, then runs the narrowly-scoped command `sudo -n /usr/bin/systemctl poweroff`. The acknowledged dialog now changes its Cancel button to an explicit **Close** button.
+
+The first real operator test returned HTTP 200 but did not power off the host. The journal showed:
+
+```text
+sudo: unable to change to root gid: Operation not permitted
+sudo: error initializing audit plugin sudoers_audit
+```
+
+The sudoers rule itself was valid and matched. The cause was `systemd/briclite.service`'s `CapabilityBoundingSet`, which allowed only network bind and realtime scheduling capabilities, preventing sudo from changing UID/GID. The service unit now includes `CAP_SETUID CAP_SETGID` in its bounding set; `NoNewPrivs` remains `0`, and the live process's `CapBnd` was verified to include the new bits. `/etc/sudoers.d/briclite-poweroff` is installed with mode `0440` and validated with `visudo`.
+
+The service was daemon-reloaded and restarted successfully after the fix. The live dashboard is served on **port 80** (the PSA's real `config.json` differs from the sanitized local examples), not port 8080. The first failed click did not shut down the unit; after this fix, refresh the operator's browser page before testing again so it loads the new Close-button markup. A successful post-fix power-off has not yet been independently verified; do not invoke `/api/shutdown` programmatically without the operator's explicit confirmation.
+
+Deployment detail for the next session: the live PSA checkout is flat (`/opt/briclite/main.py`, `/opt/briclite/web/templates/index.html`), while the local sanitized repo keeps `briclite/main.py` and `briclite/web/templates/index.html`. The documented nested PSA paths in older `DEVELOPMENT.md` examples are stale.
+
 ## Update — 2026-09-14: Operator dashboard, network-health telemetry, and Lenovo launch setup
 
 This work is deployed on the PSA (`marlowfm@172.16.10.213`, `/opt/briclite`) and its dashboard is served directly to the operator Lenovo at `http://192.168.254.1/`.  Dashboard-only template changes are live on refresh; the telemetry/backend changes below required a `briclite.service` restart and the requested codec link restored automatically afterward.

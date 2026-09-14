@@ -1,0 +1,4 @@
+# Allow the unprivileged Briclite service to power off the PSA300 from its
+# authenticated/confirmed dashboard action. Keep this command exact and
+# passwordless so it cannot be used as a general-purpose root shell.
+marlowfm ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff

@@ -182,6 +182,28 @@
             padding: 7px 12px; border-radius: 4px; white-space: nowrap;
         }
         .link-out:hover { background: #00292d; }
+        .shutdown-btn {
+            color: #ff9b9b; border-color: #7b3035; background: #281719;
+        }
+        .shutdown-btn:hover { background: #421d21; border-color: var(--red); color: #ffd1d1; }
+
+        /* ---------- deliberate power-off confirmation ---------- */
+        .shutdown-dialog {
+            width: min(430px, calc(100vw - 32px));
+            color: var(--ink); background: linear-gradient(180deg, #252b2f, #181c1f);
+            border: 1px solid #8c383d; border-radius: 8px; padding: 0;
+            box-shadow: 0 18px 60px #000b, 0 0 0 1px #ff4d4d22;
+        }
+        .shutdown-dialog::backdrop { background: #050708cc; backdrop-filter: blur(2px); }
+        .shutdown-dialog-inner { padding: 20px 22px 18px; }
+        .shutdown-dialog h2 { margin: 0 0 9px; font-size: 18px; letter-spacing: 0.08em; text-transform: uppercase; color: #ffd1d1; }
+        .shutdown-dialog p { margin: 0; font-family: var(--font-num); font-size: 11px; line-height: 1.55; color: var(--ink-dim); }
+        .shutdown-dialog strong { color: var(--ink); }
+        .shutdown-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 18px; }
+        .shutdown-actions button { font: 600 11px var(--font-label); letter-spacing: 0.06em; text-transform: uppercase; padding: 8px 14px; border-radius: 4px; cursor: pointer; }
+        .shutdown-cancel { color: var(--ink-dim); background: #232a2c; border: 1px solid var(--line); }
+        .shutdown-confirm { color: #2b0a0a; background: var(--red); border: 1px solid #ff9292; }
+        .shutdown-confirm:hover, .shutdown-cancel:hover { filter: brightness(1.12); }
 
         /* ---------- shared card chrome ---------- */
         .module {
@@ -429,7 +451,19 @@
         </div>
         <div class="spacer"></div>
         <a id="goxlr-ui-link" class="link-out" href="#" target="_blank" rel="noopener noreferrer">GoXLR Utility ↗</a>
+        <button class="link-out shutdown-btn" type="button" onclick="openShutdownDialog()">Shut Down PSA</button>
     </div>
+
+    <dialog class="shutdown-dialog" id="shutdown-dialog" aria-labelledby="shutdown-title">
+        <div class="shutdown-dialog-inner">
+            <h2 id="shutdown-title">Power off PSA300?</h2>
+            <p>This will stop the codec and shut down the PSA300 computer. <strong>Audio will stop immediately.</strong> Use this only when you are ready to power down the unit.</p>
+            <div class="shutdown-actions">
+                <button class="shutdown-cancel" type="button" onclick="closeShutdownDialog()">Cancel</button>
+                <button class="shutdown-confirm" id="shutdown-confirm" type="button" onclick="confirmShutdown()">Shut Down PSA</button>
+            </div>
+        </div>
+    </dialog>
 
     <div class="dash-grid">
         <div class="dash-left">
@@ -647,6 +681,30 @@
             } else {
                 connectLink();
             }
+        }
+
+        function openShutdownDialog() {
+            document.getElementById('shutdown-dialog').showModal();
+        }
+        function closeShutdownDialog() {
+            document.getElementById('shutdown-dialog').close();
+        }
+        async function confirmShutdown() {
+            const button = document.getElementById('shutdown-confirm');
+            button.disabled = true;
+            button.textContent = 'Shutting down…';
+            try {
+                const response = await fetch('/api/shutdown', {method: 'POST'});
+                if (!response.ok) throw new Error('shutdown request rejected');
+            } catch (error) {
+                button.disabled = false;
+                button.textContent = 'Try again';
+                return;
+            }
+            const closeButton = document.querySelector('.shutdown-cancel');
+            closeButton.textContent = 'Close';
+            closeButton.onclick = closeShutdownDialog;
+            document.querySelector('.shutdown-dialog p').textContent = 'The PSA300 has accepted the shutdown request. You can close this window.';
         }
 
         // ---------- network graph (operator-controlled) ----------

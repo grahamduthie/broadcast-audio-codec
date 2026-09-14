@@ -22,6 +22,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname
 
 _BRICLITE_HOME = os.environ.get("BRICLITE_HOME", "/opt/briclite")
 
+# Set once a shutdown has been accepted so repeated clicks cannot queue
+# multiple power-off requests while the first one is being processed.
+_shutdown_requested = False
+
 with open(os.path.join(_BRICLITE_HOME, "config.json")) as f:
     config = json.load(f)
 
@@ -468,6 +472,33 @@ class StudioReturnLevelRequest(BaseModel):
     level: int  # 0-255
 
 
+async def _poweroff_host() -> None:
+    """Ask systemd to power off the PSA after the HTTP response is sent.
+
+    The service runs unprivileged, so the PSA installation grants its service
+    account one narrowly-scoped, passwordless sudo command for this purpose.
+    """
+    await asyncio.sleep(0.5)
+    try:
+        loop = asyncio.get_event_loop()
+        if controller is not None:
+            controller.full_stop(loop)
+        process = await asyncio.create_subprocess_exec(
+            "sudo", "-n", "/usr/bin/systemctl", "poweroff",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await process.communicate()
+        if process.returncode:
+            raise RuntimeError(
+                f"exit {process.returncode}: {stderr.decode(errors='replace').strip()}"
+            )
+    except Exception:
+        global _shutdown_requested
+        _shutdown_requested = False
+        logging.getLogger("main").exception("PSA shutdown request failed")
+
+
 @app.post("/api/connect")
 async def connect_codec(body: ConnectRequest = ConnectRequest()):
     global controller
@@ -563,6 +594,17 @@ async def disconnect_codec():
     desired_state.clear()
     controller.stop(loop)
     return {"status": "success", "message": "Pipeline halted"}
+
+
+@app.post("/api/shutdown")
+async def shutdown_host():
+    """Safely power off the PSA300 after the operator confirms in the UI."""
+    global _shutdown_requested
+    if _shutdown_requested:
+        return {"status": "accepted", "message": "Shutdown already requested"}
+    _shutdown_requested = True
+    asyncio.create_task(_poweroff_host())
+    return {"status": "accepted", "message": "PSA300 is shutting down"}
 
 
 @app.websocket("/ws/telemetry")

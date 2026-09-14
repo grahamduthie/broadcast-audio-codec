@@ -11,7 +11,7 @@ This document explains the internal design of the broadcast audio codec, key des
 │                                                               │
 │  ┌────────────────────────────────────────────────────────┐ │
 │  │ FastAPI Web Application (main.py)                      │ │
-│  │ - HTTP API: /api/connect, /api/disconnect             │ │
+│  │ - HTTP API: /api/connect, /api/disconnect, /api/shutdown│ │
 │  │ - WebSocket: /ws/telemetry (100ms updates)            │ │
 │  │ - Serves: HTML dashboard on /                          │ │
 │  └────────────────────────────────────────────────────────┘ │
@@ -240,6 +240,7 @@ The old RX Channel Routing buttons (L+R Stereo/Left/Right) were removed from the
 
 **Controls:**
 - Link indicator plus action button — green **Link Connected** with **Disconnect**, or red **Link Disconnected** with **Connect**; the action starts/stops the RTP socket and network threads while the local audio/meter pipelines remain available
+- **Shut Down PSA** beside the GoXLR Utility link — opens an explicit confirmation dialog, then `POST /api/shutdown` stops the local pipeline and asks systemd to power off the host. The dialog changes to an explicit Close button after the request is accepted; it is intentionally not an immediate one-click action.
 - Optional IP override field — allows changing `target_ip` at runtime
 - `POST /api/mic_gain` `{"value": 0-72}` — Mic preamp gain
 - `POST /api/studio_return_level` `{"level": 0-255}` — Studio Return PFL baseline
@@ -444,6 +445,8 @@ The goxlr-utility daemon (`goxlr-daemon.service`) must be running for GoXLR mode
 ---
 
 ## 10. Current Limitations
+
+**Dashboard host shutdown:** `POST /api/shutdown` is intentionally a destructive operation and is protected in the UI by a confirmation dialog. The service runs as the unprivileged `marlowfm` user, so the PSA installation requires `/etc/sudoers.d/briclite-poweroff` granting only `/usr/bin/systemctl poweroff` and the unit's `CapabilityBoundingSet` must retain `CAP_SETUID CAP_SETGID`; otherwise sudo fails with `unable to change to root gid`. See `BUILD.md` and `CURRENT-STATUS.md` for the live deployment details. A browser refresh is needed after deploying template changes.
 
 **Codec auto-detection delay:** When connecting, the remote device may show a fallback codec (G.722 VoIP) for 2-3 seconds before recognizing AAC. Disconnect/reconnect resets this.
 

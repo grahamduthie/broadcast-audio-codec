@@ -593,6 +593,37 @@ This matches a long-standing, still-open upstream `actix-web` limitation (GitHub
 
 **If you want to confirm the trigger:** close any open GoXLR Utility web UI tabs before a reboot and see if the ~30s delay disappears. **Not worth fixing:** this is behaviour inside the installed third-party `/usr/bin/goxlr-daemon` binary, not this repo's code — it just adds ~30s to every reboot/service-stop, with no functional impact once the box comes back.
 
+## Issue: Dashboard shutdown button accepts the request but the PSA does not power off
+
+The **Shut Down PSA** control is deliberately a two-step action: press the
+button, confirm the warning dialog, then wait for the host to power off. The
+dialog should change its Cancel button to **Close** after the HTTP request is
+accepted. Refresh the dashboard after a deployment so the latest template is
+loaded.
+
+If the dashboard reports acceptance but the PSA remains up, inspect:
+
+```bash
+journalctl -u briclite.service --since '-10 min' --no-pager | grep -A4 -B2 'PSA shutdown'
+sudo -n -l -U marlowfm | grep '/usr/bin/systemctl poweroff'
+```
+
+The known failure was fixed on 2026-09-14. The sudoers rule was present, but
+`briclite.service`'s restricted `CapabilityBoundingSet` omitted
+`CAP_SETUID`/`CAP_SETGID`, producing `sudo: unable to change to root gid` and
+`sudoers_audit` errors. Keep both capabilities in the unit and run
+`systemctl daemon-reload` plus a service restart after changing it. The
+required rule is `/etc/sudoers.d/briclite-poweroff`, mode `0440`, containing
+only:
+
+```text
+marlowfm ALL=(root) NOPASSWD: /usr/bin/systemctl poweroff
+```
+
+Do not test the endpoint with curl unless the operator has explicitly
+confirmed a real shutdown; it is destructive. The first failed click left the
+PSA running, but a successful retry is expected to make the host unreachable.
+
 ## Issue: Behringer (or other USB peripherals) repeatedly disconnect, reset, or throw ALSA "No such device" errors
 
 ### Cause and current evidence
