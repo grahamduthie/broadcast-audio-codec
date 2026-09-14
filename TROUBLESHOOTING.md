@@ -519,10 +519,10 @@ Expected, not (yet) fixed — see `ARCHITECTURE.md` §12 roadmap item 5. The 202
 
 ## Issue: GoXLR faders/colours look wrong after a reboot or service restart (wrong layout, wrong colours, Music/studio-return inaudible)
 
-### Root cause (found 2026-09-09)
-The correct fader layout, routing, and colours (`ARCHITECTURE.md` §9 "GoXLRInterface", `GOXLR-MINI-LINUX.md` §10) are asserted in code by `GoXLRInterface.start()`, **not** loaded from any saved `.goxlr` profile file. `start()` only runs when the pipeline actually connects — `POST /api/connect`, a channel-mode/Behringer-hotplug `_full_reconnect()`, or the RX watchdog's auto-reconnect. It does **not** run just because `briclite.service` (or the host) started — `main.py`'s `lifespan()` only constructs the `PipelineController`, it doesn't start it.
+### Behaviour changed 2026-09-14 — read this before assuming the 2026-09-09 root cause still applies
+The correct fader layout, routing, and colours (`ARCHITECTURE.md` §9 "GoXLRInterface", `GOXLR-MINI-LINUX.md` §10) are asserted in code by `GoXLRInterface.start()`, **not** loaded from any saved `.goxlr` profile file. Until 2026-09-14, `start()` only ran once the RTP link actually connected (`POST /api/connect`, a channel-mode/Behringer-hotplug `_full_reconnect()`, or the RX watchdog's auto-reconnect) — `main.py`'s `lifespan()` only constructed the `PipelineController`, it didn't start it, so the GoXLR sat on its on-disk `goxlr-utility` profile (wrong layout/colours) until something connected.
 
-So after any reboot or `systemctl restart`, until something actually connects, the physical GoXLR is left showing whatever the `goxlr-utility` daemon's on-disk profile last had — on the PSA300 this is a profile literally named `Default`, unchanged since 1 Jun, with a different fader mapping (A=Mic, B=Music, C=Chat, D=System) and Music channel volume 0. This looks alarming (wrong colours, wrong fader assignment, the studio-return tone/audio inaudible) but is expected pre-connect state, not a fault, and there is no other "correct" profile file hiding somewhere to load instead.
+**As of 2026-09-14** (see `CURRENT-STATUS.md`'s "Broadcast Mix metering independent of connection status" entry), `PipelineController.begin_local()` calls `GoXLRInterface.start()` immediately in `lifespan()`, at every process boot — independent of whether the RTP network link is connected. The correct fader layout/routing/colours should now be asserted within a second or two of `briclite.service` starting, **before** anyone presses Connect. This was a deliberate, substantial redesign (Broadcast Mix metering needed the local GoXLR pipeline running continuously) — verify it live after any change in this area rather than assuming either the old or new behaviour without checking.
 
 ### Diagnosis
 ```bash
@@ -532,14 +532,16 @@ d=json.load(sys.stdin); m=list(d['mixers'].values())[0]
 print({k:v['channel'] for k,v in m['fader_status'].items()})
 print(m['levels']['volumes'])
 "
-# Expect A=Mic, B=LineIn, C=Game, D=Console once connected; anything else means start() hasn't run yet.
+# Expect A=Mic, B=LineIn, C=Game, D=Console shortly after boot; anything else means
+# begin_local() hasn't run yet (still starting) or PipelineController.begin_local()
+# itself needs investigating — it's no longer gated on a connect ever happening.
 # (D was LineIn and B was Chat before 2026-09-13; music now feeds Fader D over optical,
 # and the Behringer guest mic now feeds Fader B over the freed analogue Line In.)
-journalctl -u briclite.service | grep -i "api/connect"   # confirm whether a connect has actually happened this boot
+journalctl -u briclite.service | grep -i "GoXLR Mini ready"   # confirms start() actually ran this boot
 ```
 
 ### Fix
-Call `POST /api/connect` (see the deploy round-trip above) — this reasserts the correct layout, routing, and colours from code within a second or two. Do **not** try to fix it by loading a different saved `.goxlr` profile via `goxlr-client profiles device load` or the GoXLR app — none of the profile files on disk match briclite's managed layout, and loading one has no lasting effect since the next `start()` overwrites it anyway.
+If the layout is still wrong more than a few seconds after `briclite.service` starts, that's a real fault (not expected pre-connect state as it was before 2026-09-14) — check the journal for errors from `begin_local()`/`GoXLRInterface.start()` first. `POST /api/connect` still reasserts the layout as a side effect of bringing the network link up, but shouldn't be needed just to fix routing/colours any more. Do **not** try to fix it by loading a different saved `.goxlr` profile via `goxlr-client profiles device load` or the GoXLR app — none of the profile files on disk match briclite's managed layout, and loading one has no lasting effect since `start()` overwrites it on the next boot or reconnect anyway.
 
 ## Issue: Behringer (or other USB peripherals) repeatedly disconnect, reset, or throw ALSA "No such device" errors
 

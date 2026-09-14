@@ -313,7 +313,34 @@ class PipelineController:
 
         self.rx_pipeline, self.rx_appsrc = self._build_rx_pipeline(self.rx_channel_mode)
 
+    def begin_local(self, event_loop):
+        """Bring the local GoXLR/Behringer audio pipeline live — TX capture
+        (Broadcast Mix metering included) and RX playback — independent of
+        whether a network link to the remote end is connected. Call once
+        right after construction (process startup, or after a full_stop()+
+        rebuild) and never again on this instance.
+
+        This exists because is_active (see start()/stop() below) now means
+        only "network link active", not "local pipeline running": the local
+        pipeline runs continuously so the Broadcast Mix meter reflects real
+        GoXLR hardware levels regardless of connection status. TX and RX are
+        two directions of the same physical USB audio device on both
+        interfaces (GoXLR Mini, Behringer UCA202) — see _full_reconnect()'s
+        docstring in main.py for why they must always be brought up and torn
+        down together, never independently.
+        """
+        self.event_loop = event_loop
+        self.interface.start()
+        self.set_clean_news_return_level(self.interface.clean_news_return_level())
+        self.set_clean_news_return_muted(self.interface.clean_news_return_muted())
+        self.tx_pipeline.set_state(Gst.State.PLAYING)
+        self.rx_pipeline.set_state(Gst.State.PLAYING)
+        threading.Thread(target=self.glib_loop.run, daemon=True).start()
+
     def start(self, event_loop):
+        """Bring the network link up: open the RTP socket and start
+        exchanging audio with the remote end. Assumes begin_local() has
+        already brought the local pipeline live on this instance."""
         self.event_loop = event_loop
         self.jitter_buf.reset()
 
@@ -323,18 +350,12 @@ class PipelineController:
         self.sock.settimeout(0.5)
         self.sock.bind(("0.0.0.0", self.rx_port))
 
-        self.interface.start()
-        self.set_clean_news_return_level(self.interface.clean_news_return_level())
-        self.set_clean_news_return_muted(self.interface.clean_news_return_muted())
         self.last_rx_packet = time.monotonic()
         self._last_rx_sink_buffer = time.monotonic()
         self._last_rx_sink_buffer_seen = None
         self._last_tx_sample = 0.0
-        self.tx_pipeline.set_state(Gst.State.PLAYING)
-        self.rx_pipeline.set_state(Gst.State.PLAYING)
         self.is_active = True
 
-        threading.Thread(target=self.glib_loop.run,   daemon=True).start()
         threading.Thread(target=self._rx_loop,        daemon=True).start()
         threading.Thread(target=self._playout_loop,   daemon=True).start()
 
@@ -350,10 +371,48 @@ class PipelineController:
         )
 
     def stop(self, event_loop):
+        """Take the network link down: close the socket, stop RX/playout
+        threads, mark DISCONNECTED. Leaves the local pipeline (TX capture/
+        metering, RX playback) running — see begin_local(). Broadcast Mix
+        keeps showing real levels; the two network-fed meters (Studio
+        Return/News) go quiet since nothing is arriving to decode, so their
+        peaks are explicitly reset here rather than left to freeze at their
+        last real value.
+
+        Use full_stop() instead when the whole PipelineController is being
+        discarded (mode change, hotplug, fault recovery, process shutdown) —
+        only that path may safely tear down TX/RX, and always together; see
+        full_stop()'s docstring."""
         self.is_active = False
         if self._rx_rebuild_timer:
             self._rx_rebuild_timer.cancel()
             self._rx_rebuild_timer = None
+        self.jitter_buf.reset()
+        if self.sock:
+            try:
+                self.sock.close()
+            except Exception:
+                pass
+            self.sock = None
+        asyncio.run_coroutine_threadsafe(
+            global_state.update_metrics({
+                "connection_status": "DISCONNECTED",
+                "rx_peak_l": -60.0, "rx_peak_r": -60.0,
+                "jitter": 0, "lost": 0,
+            }),
+            event_loop
+        )
+
+    def full_stop(self, event_loop):
+        """Tear down the local pipeline entirely, including TX/RX hardware
+        handles — only safe when this PipelineController object is about to
+        be discarded and replaced (a fresh instance takes over via its own
+        begin_local()). TX and RX are two directions of the same physical
+        USB audio device on both interfaces; tearing down and reopening only
+        one side while the other stays open reliably wedges it (confirmed
+        live on the GoXLR Mini — see _full_reconnect()'s docstring in
+        main.py), so both always go down together here."""
+        self.stop(event_loop)
         self.tx_pipeline.set_state(Gst.State.NULL)
         self.rx_pipeline.set_state(Gst.State.NULL)
         self.tx_pipeline.get_state(Gst.SECOND)   # block until audio devices are released
@@ -363,19 +422,8 @@ class PipelineController:
         if self._headphone_timing_probe_file:
             self._headphone_timing_probe_file.close()
             self._headphone_timing_probe_file = None
-        self.jitter_buf.reset()
-        if self.sock:
-            try:
-                self.sock.close()
-            except Exception:
-                pass
         asyncio.run_coroutine_threadsafe(
-            global_state.update_metrics({
-                "connection_status": "DISCONNECTED",
-                "tx_peak_l": -60.0, "tx_peak_r": -60.0,
-                "rx_peak_l": -60.0, "rx_peak_r": -60.0,
-                "jitter": 0, "lost": 0,
-            }),
+            global_state.update_metrics({"tx_peak_l": -60.0, "tx_peak_r": -60.0}),
             event_loop
         )
 
@@ -401,17 +449,16 @@ class PipelineController:
             volume.set_property("volume", 0.0 if self._clean_news_return_muted else gain)
 
     def set_rx_channel_mode(self, mode: str):
+        # No longer gated on is_active — the RX pipeline is always running
+        # (see begin_local()), so a mode change applies whether or not the
+        # network link is connected.
         self.rx_channel_mode = mode
-        if not self.is_active:
-            return
         if self._rx_rebuild_timer:
             self._rx_rebuild_timer.cancel()
         self._rx_rebuild_timer = threading.Timer(0.25, self._do_rx_rebuild)
         self._rx_rebuild_timer.start()
 
     def _do_rx_rebuild(self):
-        if not self.is_active:
-            return
         # Serialised against _playout_loop's push-buffer calls and against
         # overlapping rebuild triggers (e.g. a channel-mode switch and a
         # Behringer hotplug event landing close together) — without this,
@@ -419,8 +466,6 @@ class PipelineController:
         # is mid-emit() or mid-rebuild on the same objects wedges GStreamer
         # and freezes the RX meter with no error ever posted to the bus.
         with self._rx_rebuild_lock:
-            if not self.is_active:
-                return
             mode = self.rx_channel_mode
             old = self.rx_pipeline
             old.set_state(Gst.State.NULL)
@@ -438,6 +483,13 @@ class PipelineController:
             if gap > _GAP_LOG_THRESHOLD_S:
                 logger.warning(f"TX capture gap: {gap*1000:.0f}ms since previous sample")
         self._last_tx_sample = now
+
+        # TX capture now runs continuously for Broadcast Mix metering (see
+        # begin_local()), independent of the network link — do not transmit,
+        # or advance RTP sequence/timestamp state, while disconnected.
+        if not self.is_active or not self.sock:
+            return Gst.FlowReturn.OK
+
         buf  = sample.get_buffer()
         data = buf.extract_dup(0, buf.get_size())
 
@@ -566,7 +618,11 @@ class PipelineController:
         if t == Gst.MessageType.ERROR:
             err, dbg = message.parse_error()
             logger.error(f"GST ERROR: {err} | {dbg}")
-            if (self.is_active and self.on_pipeline_fault and not self._device_error_seen
+            # Not gated on is_active (network-link state) any more — the
+            # local pipeline now runs continuously (see begin_local()), so a
+            # device-level fault must be recovered regardless of whether the
+            # network link happens to be connected at the moment it occurs.
+            if (self.on_pipeline_fault and not self._device_error_seen
                     and any(p in str(err).lower() for p in _DEVICE_ERROR_PATTERNS)):
                 self._device_error_seen = True
                 logger.warning(

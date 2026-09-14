@@ -184,7 +184,12 @@ async def _save_desired_link() -> None:
 
 
 async def _restore_desired_link() -> bool:
-    """Start the pipeline only when a previous operator requested it stay live."""
+    """Bring the network link up only when a previous operator requested it
+    stay live. The local audio pipeline is already running continuously by
+    the time this is called — see lifespan()/begin_local() — so this only
+    needs to start network exchange on the existing controller, not build a
+    new one; rx_channel_mode was already applied to the pipeline at
+    construction, in lifespan()."""
     global controller, interface
     desired = desired_state.load()
     if not desired or controller.is_active:
@@ -195,23 +200,16 @@ async def _restore_desired_link() -> bool:
     target_ip = desired.get("target_ip")
     if isinstance(target_ip, str) and target_ip:
         config["audio_network"]["target_ip"] = target_ip
-    mode = desired.get("rx_channel_mode", "stereo")
-    if mode not in {"stereo", "left", "right"}:
-        mode = "stereo"
+        controller.target_ip = target_ip
     volume = desired.get("rx_volume", 100)
     if not isinstance(volume, int) or not 0 <= volume <= 100:
         volume = 100
     await global_state.update_metrics({
-        "rx_channel_mode": mode,
         "rx_volume": volume,
         "headphone_volume": desired.get("headphone_volume", 255),
     })
     loop = asyncio.get_event_loop()
-    controller = PipelineController(
-        config, interface, rx_channel_mode=mode,
-        rx_volume_pct=100 if isinstance(interface, GoXLRInterface) else volume,
-        on_pipeline_fault=_on_pipeline_fault,
-    )
+    controller.set_rx_volume(100 if isinstance(interface, GoXLRInterface) else volume)
     controller.start(loop)
     if isinstance(interface, GoXLRInterface):
         headphone = desired.get("headphone_volume", 255)
@@ -242,33 +240,43 @@ _pipeline_fault_retry_pending = False
 
 
 async def _full_reconnect(rx_channel_mode: Optional[str] = None) -> None:
-    """Stop and fully rebuild the pipeline (both TX and RX together) rather than
-    rebuilding RX in place.
+    """Stop and fully rebuild the local pipeline (both TX and RX together)
+    rather than rebuilding RX in place, then restore the network link
+    afterward if it was up before.
 
     With the GoXLR interface, TX (capture) and RX (playback) are two directions
     of the same physical USB audio device. Tearing down and reopening only the
     RX side while TX stays open reliably wedges the GoXLR's ALSA device —
     PipelineController._do_rx_rebuild's in-place RX-only rebuild is only safe
     for the plain Behringer interface, which has no shared device. This is used
-    for RX channel-mode changes and Behringer hotplug while running GoXLR.
+    for RX channel-mode changes and Behringer hotplug while running GoXLR, and
+    for automatic recovery from a device-level pipeline fault.
+
+    Always rebuilds the local pipeline, even while the network link is
+    currently disconnected — the local pipeline (Broadcast Mix capture/
+    metering, GoXLR routing) runs continuously from process startup (see
+    lifespan()/PipelineController.begin_local()), independent of whether the
+    network link to a remote is up. Only the network link's own prior state
+    (was_active) decides whether it's restored afterward.
     """
     global controller
     async with _full_reconnect_lock:
-        if not controller.is_active:
-            return
         loop = asyncio.get_event_loop()
+        was_active = controller.is_active
         mode = rx_channel_mode if rx_channel_mode is not None else controller.rx_channel_mode
         snapshot = await global_state.get_snapshot()
         # GoXLR uses its hardware LineOut master for Speaker Volume, so its
         # software RX gain must remain at unity. Behringer mode carries the
         # same UI percentage in the software gain instead.
         volume_pct = 100 if isinstance(interface, GoXLRInterface) else snapshot.get("rx_volume", 100)
-        controller.stop(loop)
+        controller.full_stop(loop)
         await asyncio.sleep(0.3)
         controller = PipelineController(config, interface, rx_channel_mode=mode,
                                          rx_volume_pct=volume_pct,
                                          on_pipeline_fault=_on_pipeline_fault)
-        controller.start(loop)
+        controller.begin_local(loop)
+        if was_active:
+            controller.start(loop)
 
 
 async def _on_pipeline_fault() -> None:
@@ -373,7 +381,7 @@ async def _interface_monitor():
         while True:
             await asyncio.sleep(5)
 
-            if isinstance(interface, GoXLRInterface) and controller.is_active:
+            if isinstance(interface, GoXLRInterface):
                 now_present = GoXLRInterface.behringer_available()
                 if now_present != controller.rx_extra_sources_active:
                     log.info(f"Behringer second mic {'connected' if now_present else 'disconnected'}")
@@ -409,9 +417,18 @@ async def lifespan(app: FastAPI):
     if isinstance(target_ip, str) and target_ip:
         config["audio_network"]["target_ip"] = target_ip
     interface = _make_interface(config)
-    controller = PipelineController(config, interface, on_pipeline_fault=_on_pipeline_fault)
+    # Build with whatever RX channel mode a previous session wanted so the
+    # local pipeline (which now runs continuously, see begin_local() below)
+    # doesn't need an immediate rebuild in _restore_desired_link().
+    initial_mode = desired.get("rx_channel_mode", "stereo") if desired else "stereo"
+    if initial_mode not in {"stereo", "left", "right"}:
+        initial_mode = "stereo"
+    controller = PipelineController(config, interface, rx_channel_mode=initial_mode,
+                                     on_pipeline_fault=_on_pipeline_fault)
+    loop = asyncio.get_event_loop()
+    controller.begin_local(loop)
     mode = "GoXLR" if isinstance(interface, GoXLRInterface) else "Behringer"
-    await global_state.update_metrics({"audio_interface": mode})
+    await global_state.update_metrics({"audio_interface": mode, "rx_channel_mode": initial_mode})
     await _sync_goxlr_state(interface)
     if not desired:
         await global_state.update_metrics({"rx_volume": 100})
@@ -426,8 +443,7 @@ async def lifespan(app: FastAPI):
             await task
         except asyncio.CancelledError:
             pass
-    if controller.is_active:
-        controller.stop(asyncio.get_event_loop())
+    controller.full_stop(asyncio.get_event_loop())
 
 
 app = FastAPI(title="Broadcast Audio Codec Core", lifespan=lifespan)
@@ -461,15 +477,17 @@ async def connect_codec(body: ConnectRequest = ConnectRequest()):
         return {"status": "error", "message": "Already running"}
     if body.target_ip:
         config["audio_network"]["target_ip"] = body.target_ip
+        controller.target_ip = body.target_ip
     await _save_desired_link()
+    # The local pipeline is already running continuously (see lifespan()/
+    # begin_local()) with the currently-selected RX channel mode already
+    # applied by /api/rx_mode — Connect only needs to bring the network link
+    # up on the existing controller, not build a new one.
     snapshot = await global_state.get_snapshot()
-    saved_mode = snapshot.get("rx_channel_mode", "stereo")
     # In GoXLR mode the Speaker slider controls the hardware LineOut master;
     # keep the software receive gain at unity to avoid applying both gains.
     saved_volume = 100 if isinstance(interface, GoXLRInterface) else snapshot.get("rx_volume", 100)
-    controller = PipelineController(config, interface, rx_channel_mode=saved_mode,
-                                     rx_volume_pct=saved_volume,
-                                     on_pipeline_fault=_on_pipeline_fault)
+    controller.set_rx_volume(saved_volume)
     controller.start(loop)
     return {"status": "success", "message": "Pipeline active"}
 
