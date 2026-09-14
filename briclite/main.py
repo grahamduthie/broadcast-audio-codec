@@ -29,13 +29,12 @@ interface: Optional[AudioInterface] = None
 desired_state = DesiredState()
 
 
-def _persist_pfl_state(active: bool, saved_volume: Optional[int]) -> None:
+def _persist_pfl_state(active: bool) -> None:
     """Keep PFL intent across a Briclite or GoXLR-daemon process restart."""
     desired = desired_state.load()
     if not desired:
         return
     desired["studio_pfl"] = active
-    desired["studio_saved_volume"] = saved_volume if active else None
     desired_state.save(desired)
 
 
@@ -126,7 +125,6 @@ def _make_interface(cfg: dict) -> AudioInterface:
     desired = desired_state.load()
     goxlr_options = {
         "studio_pfl": bool(desired.get("studio_pfl", False)),
-        "studio_saved_volume": desired.get("studio_saved_volume"),
         "on_pfl_changed": _persist_pfl_state,
         "restored_fader_volumes": desired.get("goxlr_fader_volumes"),
         "on_fader_volume_changed": _persist_goxlr_fader_volume,
@@ -156,12 +154,11 @@ async def _save_desired_link() -> None:
     """Persist all operator-controlled values needed to recreate an active link."""
     snapshot = await global_state.get_snapshot()
     studio_pfl = False
-    studio_saved_volume = None
     monitor_cut_enabled = False
     mic_gain = None
     studio_return_level = None
     if isinstance(interface, GoXLRInterface):
-        studio_pfl, studio_saved_volume = interface.studio_pfl_state()
+        studio_pfl = interface.studio_pfl_state()
         monitor_cut_enabled = interface.monitor_cut_state()
         fader_volumes = interface.get_fader_volumes()
         mic_gain = interface.get_mic_gain()
@@ -176,7 +173,6 @@ async def _save_desired_link() -> None:
         "audio_interface": "GoXLR" if isinstance(interface, GoXLRInterface) else "Behringer",
         "studio_pfl": studio_pfl,
         "monitor_cut_enabled": monitor_cut_enabled,
-        "studio_saved_volume": studio_saved_volume,
         "goxlr_fader_volumes": fader_volumes,
         "goxlr_mic_gain": mic_gain,
         "goxlr_studio_return_level": studio_return_level,

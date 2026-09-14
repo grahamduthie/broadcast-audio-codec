@@ -174,8 +174,7 @@ def _capture_pair_extract_matrix(n_in: int, left: int, right: int) -> str:
 class GoXLRInterface(AudioInterface):
 
     def __init__(self, config: dict, studio_pfl: bool = False,
-                 studio_saved_volume: Optional[int] = None,
-                 on_pfl_changed: Optional[Callable[[bool, Optional[int]], None]] = None,
+                 on_pfl_changed: Optional[Callable[[bool], None]] = None,
                  restored_fader_volumes: Optional[dict[str, int]] = None,
                  on_fader_volume_changed: Optional[Callable[[str, int], None]] = None,
                  on_fader_mute_changed: Optional[Callable[[str, bool], None]] = None,
@@ -188,7 +187,6 @@ class GoXLRInterface(AudioInterface):
                  on_studio_return_level_changed: Optional[Callable[[int], None]] = None):
         self._serial: str | None = None
         self._studio_pfl = studio_pfl
-        self._studio_saved_volume = studio_saved_volume if studio_pfl else None
         self._on_pfl_changed = on_pfl_changed
         valid_channels = {channel for _, channel in _FADERS}
         supplied_volumes = restored_fader_volumes if isinstance(restored_fader_volumes, dict) else {}
@@ -470,14 +468,14 @@ class GoXLRInterface(AudioInterface):
 
     def start(self) -> None:
         # Reset the "last pushed to hardware" routing cache so it gets fully
-        # reapplied below — but NOT self._studio_pfl / self._studio_saved_volume.
-        # Those must survive a reconnect: a mode switch, Behringer hotplug, or
-        # the RX watchdog's auto-reconnect tears down and rebuilds the
-        # GStreamer pipeline on this *same* GoXLRInterface instance, not the
-        # physical GoXLR device, so an operator's studio-return PFL must not
-        # be silently dropped underneath them. A genuinely fresh instance
-        # (see __init__, used on process boot and GoXLR hotplug) still starts
-        # with PFL off, which is correct there.
+        # reapplied below — but NOT self._studio_pfl. That must survive a
+        # reconnect: a mode switch, Behringer hotplug, or the RX watchdog's
+        # auto-reconnect tears down and rebuilds the GStreamer pipeline on
+        # this *same* GoXLRInterface instance, not the physical GoXLR device,
+        # so an operator's studio-return PFL must not be silently dropped
+        # underneath them. A genuinely fresh instance (see __init__, used on
+        # process boot and GoXLR hotplug) still starts with PFL off, which is
+        # correct there.
         monitor_sources = [_FADER_TO_SOURCE[f] for f, _ in _FADERS] + ["Music"]
         self._monitor_routing = {
             (source, output): _ROUTING[source][output]
@@ -517,7 +515,7 @@ class GoXLRInterface(AudioInterface):
         self._apply_fader_volumes()
         if self._mic_gain is not None:
             self._cmd({"SetMicrophoneGain": [self._mic_type, self._mic_gain]})
-        if self._studio_return_level is not None and not self._studio_pfl:
+        if self._studio_return_level is not None:
             self._cmd({"SetVolume": ["Music", self._studio_return_level]})
         self._apply_routing()
         self._apply_mute_functions()
@@ -526,16 +524,6 @@ class GoXLRInterface(AudioInterface):
         # Cut — needed even when neither is active, so the freshly-reset
         # _monitor_routing cache above matches what was actually just sent.
         self._apply_monitor_routing()
-        if self._studio_pfl:
-            if self._studio_saved_volume is None:
-                self._apply_studio_pfl_volume()
-            else:
-                # Already mid-PFL from before this reconnect — the hardware
-                # itself was never touched, so just re-force the volume
-                # rather than re-deriving _studio_saved_volume from current
-                # status (which would read back 255 and clobber the real
-                # pre-PFL value we're holding onto).
-                self._cmd({"SetVolume": ["Music", 255]})
         self._set_bleep_colour()
         self._set_cough_colour()
         # SetVolume is echoed through the daemon WebSocket. Do not mistake
@@ -667,19 +655,6 @@ class GoXLRInterface(AudioInterface):
                 self._cmd({"SetRouter": [key[0], key[1], enabled]})
                 self._monitor_routing[key] = enabled
 
-    def _apply_studio_pfl_volume(self) -> None:
-        """Override Music volume to 255 when PFL active (true pre-fade listen);
-        restore the saved volume when PFL is released."""
-        if self._studio_pfl:
-            status = self._ipc({"GetStatus": None})
-            mixer = next(iter(status["Status"]["mixers"].values()))
-            self._studio_saved_volume = mixer["levels"]["volumes"]["Music"]
-            self._cmd({"SetVolume": ["Music", 255]})
-        else:
-            if self._studio_saved_volume is not None:
-                self._cmd({"SetVolume": ["Music", self._studio_saved_volume]})
-                self._studio_saved_volume = None
-
     def _set_bleep_colour(self) -> None:
         colour = _PFL_COLOUR if self._studio_pfl else _NORMAL_COLOUR
         self._cmd({"SetButtonColours": ["Bleep", colour, colour]})
@@ -725,9 +700,9 @@ class GoXLRInterface(AudioInterface):
             return
         self._cmd({"SetVolume": ["LineOut", max(0, min(255, level))]})
 
-    def studio_pfl_state(self) -> tuple[bool, Optional[int]]:
+    def studio_pfl_state(self) -> bool:
         """Return the desired PFL state so a new process can restore it."""
-        return self._studio_pfl, self._studio_saved_volume
+        return self._studio_pfl
 
     def monitor_cut_state(self) -> bool:
         """Return whether Studio Monitor Cut is armed, for restoration."""
@@ -776,7 +751,7 @@ class GoXLRInterface(AudioInterface):
             self._cmd({"SetMicrophoneGain": [self._mic_type, value]})
 
     def get_studio_return_level(self) -> Optional[int]:
-        """Baseline Music-bus (studio return) volume used outside of PFL.
+        """Music-bus (studio return) monitor volume.
         Falls back to a live query if start() hasn't run yet."""
         if self._studio_return_level is None and GoXLRInterface.is_available():
             status = self._ipc({"GetStatus": None})
@@ -788,18 +763,15 @@ class GoXLRInterface(AudioInterface):
         return self._studio_return_level
 
     def set_studio_return_level(self, level: int) -> None:
+        """Music-bus (studio return) monitor volume — applied live whether
+        PFL is engaged or not, so the slider always reflects what's heard."""
         level = max(0, min(255, level))
         self._studio_return_level = level
         if self._on_studio_return_level_changed is not None:
             self._on_studio_return_level_changed(level)
         if self._serial is None:
             return
-        if self._studio_pfl:
-            # PFL is currently forcing Music to 255; the new baseline takes
-            # effect once PFL is released (see _apply_studio_pfl_volume).
-            self._studio_saved_volume = level
-        else:
-            self._cmd({"SetVolume": ["Music", level]})
+        self._cmd({"SetVolume": ["Music", level]})
 
     async def monitor_pfl(self) -> None:
         """Subscribe to the GoXLR daemon WebSocket and handle studio return PFL via Bleep button."""
@@ -899,11 +871,10 @@ class GoXLRInterface(AudioInterface):
                 f"Bleep pressed — PFL {'engaging' if self._studio_pfl else 'releasing'}, "
                 f"starting GoXLR IPC burst"
             )
-            await asyncio.to_thread(self._apply_studio_pfl_volume)
             await asyncio.to_thread(self._apply_monitor_routing)
             await asyncio.to_thread(self._set_bleep_colour)
             if self._on_pfl_changed is not None:
-                self._on_pfl_changed(self._studio_pfl, self._studio_saved_volume)
+                self._on_pfl_changed(self._studio_pfl)
             dt_ms = (time.monotonic() - t0) * 1000
             logger.info(
                 f"Studio return PFL {'active' if self._studio_pfl else 'off'} "
