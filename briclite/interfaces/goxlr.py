@@ -558,6 +558,14 @@ class GoXLRInterface(AudioInterface):
         for _, channel in _FADERS:
             if channel in self._restored_fader_volumes:
                 self._cmd({"SetVolume": [channel, self._restored_fader_volumes[channel]]})
+                # Reflect the restored value immediately rather than waiting on
+                # the daemon's WebSocket echo of this same SetVolume — the PFL
+                # monitor task isn't guaranteed to be connected yet at this
+                # point in start(), so that echo can be missed entirely,
+                # leaving _fader_volumes (and therefore the mute-button LEDs
+                # and Studio Monitor Cut) stuck on the pre-restore hardware
+                # snapshot read earlier in start().
+                self._fader_volumes[channel] = self._restored_fader_volumes[channel]
         if "Game" in self._restored_fader_volumes:
             self._game_level = self._restored_fader_volumes["Game"]
 
