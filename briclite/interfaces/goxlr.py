@@ -27,6 +27,8 @@ _PICKUP_COLOUR   = "FFB000"  # amber — logical level restored; physical positi
 _GRADIENT_TOP_COLOUR = "FF0000"  # red — fixed top-of-strip anchor for the low/high gradient
 _MONITOR_CUT_ARMED_COLOUR   = "00FF00"  # green — Studio Monitor Cut armed, Line Out currently live
 _MONITOR_CUT_CUTTING_COLOUR = "FF0000"  # red   — Studio Monitor Cut armed and actively muting Line Out
+_MUTE_ENGAGED_COLOUR = "FF0000"  # red   — channel mute button pressed, full brightness regardless of fader
+_MUTE_OPEN_COLOUR    = "00FF00"  # green — unmuted, fader open past the Line Out mute threshold, full brightness
 # A fader resting at the bottom of its travel can still read a small nonzero
 # volume (observed: 1/255) rather than a clean 0. Treat anything at or below
 # this as closed so that noise doesn't falsely trigger a Line Out cut.
@@ -78,6 +80,10 @@ _FADERS = [
     ("C", "Game"),     # News feed (Codec RX Right)
     ("D", "Console"),  # Music Player (GoXLR optical input)
 ]
+_FADER_TO_CHANNEL = dict(_FADERS)
+
+# Each fader's own hardware mute button (distinct from Bleep/Cough).
+_FADER_MUTE_BUTTONS = {"A": "Fader1Mute", "B": "Fader2Mute", "C": "Fader3Mute", "D": "Fader4Mute"}
 
 # Full routing matrix applied on every start.
 # Music carries the studio return (codec RX Left) but has no fader — only
@@ -199,10 +205,13 @@ class GoXLRInterface(AudioInterface):
         # be kept in sync with _FADER_TO_SOURCE above.
         self._monitor_cut_enabled = monitor_cut_enabled
         self._on_monitor_cut_changed = on_monitor_cut_changed
-        self._mic_volumes = {
+        # Tracks all four faders' current volumes, not just the two mics:
+        # also drives the per-channel mute button's open/closed LED colour.
+        self._fader_volumes = {
             channel: self._restored_fader_volumes.get(channel, 0)
-            for channel in ("Mic", "LineIn")
+            for _, channel in _FADERS
         }
+        self._fader_muted = {fader: False for fader, _ in _FADERS}
         # The GoXLR has non-motorised faders. Amber identifies controls whose
         # restored logical value may still need physical soft pickup.
         self._pending_pickup_faders = {
@@ -223,7 +232,6 @@ class GoXLRInterface(AudioInterface):
         delay_ms = clean_cfg.get("alignment_delay_ms", _DEFAULT_CLEAN_NEWS_ALIGNMENT_DELAY_MS)
         self._clean_news_delay_ms = max(0, min(2000, delay_ms if isinstance(delay_ms, int) else _DEFAULT_CLEAN_NEWS_ALIGNMENT_DELAY_MS))
         self._game_level = self._restored_fader_volumes.get("Game", 255)
-        self._game_muted = False
         self._timing_probe = bool(clean_cfg.get("timing_probe", False))
 
         self._mic_type: str = "Dynamic"
@@ -459,7 +467,7 @@ class GoXLRInterface(AudioInterface):
         return self._game_level
 
     def clean_news_return_muted(self) -> bool:
-        return self._game_muted
+        return self._fader_muted["C"]
 
     def start(self) -> None:
         # Reset the "last pushed to hardware" routing cache so it gets fully
@@ -489,12 +497,13 @@ class GoXLRInterface(AudioInterface):
         levels = mixer.get("levels", {}).get("volumes", {})
         if isinstance(levels.get("Game"), int):
             self._game_level = levels["Game"]
-        for channel in ("Mic", "LineIn"):
+        for _, channel in _FADERS:
             if isinstance(levels.get(channel), int):
-                self._mic_volumes[channel] = levels[channel]
-        fader_status = mixer.get("fader_status", {}).get("C", {})
-        mute_state = fader_status.get("mute_state")
-        self._game_muted = isinstance(mute_state, str) and mute_state != "Unmuted"
+                self._fader_volumes[channel] = levels[channel]
+        fader_status_all = mixer.get("fader_status", {})
+        for fader in _FADER_MUTE_BUTTONS:
+            mute_state = fader_status_all.get(fader, {}).get("mute_state")
+            self._fader_muted[fader] = isinstance(mute_state, str) and mute_state != "Unmuted"
         mic_status = mixer.get("mic_status", {})
         if isinstance(mic_status.get("mic_type"), str):
             self._mic_type = mic_status["mic_type"]
@@ -579,6 +588,7 @@ class GoXLRInterface(AudioInterface):
         for fader, _ in _FADERS:
             self._cmd({"SetFaderDisplayStyle": [fader, "Gradient"]})
             self._set_fader_colour(fader)
+            self._set_mute_button_colour(fader)
         # Bleep and Cough are two-colour status buttons. Their native "off"
         # (Unmuted) appearance defaults to SetButtonOffStyle "Dimmed", which
         # dims colour_one — and since neither button is ever actually put
@@ -598,8 +608,30 @@ class GoXLRInterface(AudioInterface):
         # the top keeps both ends equally bright.
         self._cmd({"SetFaderColours": [fader, _GRADIENT_TOP_COLOUR, colour]})
 
+    def _mute_open(self, channel: str) -> bool:
+        return self._fader_volumes.get(channel, 0) > _MIC_OPEN_THRESHOLD
+
     def _any_mic_open(self) -> bool:
-        return any(level > _MIC_OPEN_THRESHOLD for level in self._mic_volumes.values())
+        return any(self._mute_open(channel) for channel in ("Mic", "LineIn"))
+
+    def _set_mute_button_colour(self, fader: str) -> None:
+        """Channel mute button: red/full when muted (regardless of fader
+        position); otherwise green/full when the fader is open past the
+        same threshold used for the Line Out mute cut, or blue/dim
+        (matching the fader's own resting colour) when closed. Full
+        brightness in the button's native "off" (Unmuted) state requires
+        SetButtonOffStyle "Colour2" — see SetButtonOffStyle comment in
+        _apply_colours — so that must be resent alongside the colours
+        whenever the open/closed state changes, not just once at start."""
+        button = _FADER_MUTE_BUTTONS[fader]
+        if self._fader_muted.get(fader, False):
+            colour, off_style = _MUTE_ENGAGED_COLOUR, "Colour2"
+        elif self._mute_open(_FADER_TO_CHANNEL[fader]):
+            colour, off_style = _MUTE_OPEN_COLOUR, "Colour2"
+        else:
+            colour, off_style = _NORMAL_COLOUR, "Dimmed"
+        self._cmd({"SetButtonColours": [button, colour, colour]})
+        self._cmd({"SetButtonOffStyle": [button, off_style]})
 
     def _monitor_cut_active(self) -> bool:
         return self._monitor_cut_enabled and self._any_mic_open()
@@ -793,36 +825,51 @@ class GoXLRInterface(AudioInterface):
                         self._on_fader_volume_changed(channel, reported)
                     if channel == "Game":
                         self._game_level = reported
-                    if channel in self._mic_volumes:
-                        was_cutting = self._monitor_cut_active()
-                        self._mic_volumes[channel] = reported
-                        if self._monitor_cut_active() != was_cutting:
-                            await asyncio.to_thread(self._apply_monitor_routing)
-                            await asyncio.to_thread(self._set_cough_colour)
-                            logger.info(
-                                "Studio Monitor Cut %s (%s fader %s)",
-                                "engaging" if not was_cutting else "releasing",
-                                channel, "opened" if reported > _MIC_OPEN_THRESHOLD else "closed",
-                            )
+                    was_open = self._mute_open(channel)
+                    was_cutting = self._monitor_cut_active() if channel in ("Mic", "LineIn") else None
+                    self._fader_volumes[channel] = reported
+                    if was_cutting is not None and self._monitor_cut_active() != was_cutting:
+                        await asyncio.to_thread(self._apply_monitor_routing)
+                        await asyncio.to_thread(self._set_cough_colour)
+                        logger.info(
+                            "Studio Monitor Cut %s (%s fader %s)",
+                            "engaging" if not was_cutting else "releasing",
+                            channel, "opened" if reported > _MIC_OPEN_THRESHOLD else "closed",
+                        )
+                    if not self._fader_muted.get(fader, False) and self._mute_open(channel) != was_open:
+                        await asyncio.to_thread(self._set_mute_button_colour, fader)
                     if (fader in self._pending_pickup_faders
                             and time.monotonic() >= self._pickup_ignore_until):
                         self._pending_pickup_faders.remove(fader)
                         await asyncio.to_thread(self._set_fader_colour, fader)
                         logger.info("Fader %s physically picked up after recovery", fader)
                     break
-            if path.endswith("/fader_status/C/mute_state"):
-                muted = value != "Unmuted"
-                self._game_muted = muted
-                if self._on_fader_mute_changed is not None:
-                    self._on_fader_mute_changed("Game", muted)
+            matched_mute_state = False
+            for fader in _FADER_MUTE_BUTTONS:
+                if path.endswith(f"/fader_status/{fader}/mute_state"):
+                    muted = value != "Unmuted"
+                    self._fader_muted[fader] = muted
+                    if fader == "C" and self._on_fader_mute_changed is not None:
+                        self._on_fader_mute_changed("Game", muted)
+                    await asyncio.to_thread(self._set_mute_button_colour, fader)
+                    matched_mute_state = True
+                    break
+            if matched_mute_state:
                 continue
-            # The immediate button-down patch arrives before mute_state.  It
-            # makes the clean TX path respond at the same instant as Fader C;
-            # the authoritative mute_state patch above corrects it on release.
-            if path.endswith("/button_down/Fader3Mute") and value is True:
-                self._game_muted = not self._game_muted
-                if self._on_fader_mute_changed is not None:
-                    self._on_fader_mute_changed("Game", self._game_muted)
+            # The immediate button-down patch arrives before mute_state. It
+            # makes the mute LED (and, for Fader C, the clean TX path)
+            # respond at the same instant as the physical press; the
+            # authoritative mute_state patch above corrects it on release.
+            matched_button_down = False
+            for fader, button in _FADER_MUTE_BUTTONS.items():
+                if path.endswith(f"/button_down/{button}") and value is True:
+                    self._fader_muted[fader] = not self._fader_muted[fader]
+                    if fader == "C" and self._on_fader_mute_changed is not None:
+                        self._on_fader_mute_changed("Game", self._fader_muted[fader])
+                    await asyncio.to_thread(self._set_mute_button_colour, fader)
+                    matched_button_down = True
+                    break
+            if matched_button_down:
                 continue
             if path.endswith("/button_down/Cough") and value is True:
                 self._monitor_cut_enabled = not self._monitor_cut_enabled
