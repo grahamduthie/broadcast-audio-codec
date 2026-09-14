@@ -29,6 +29,15 @@ bound to `enp0s25` returned `HTTP/1.1 200 OK` from Uvicorn.  Port 443 is
 closed: use the explicit `http://` URL, not HTTPS.  There was no system proxy
 configured on the Lenovo at that time.
 
+At graphical login, `/home/broadcast/.config/autostart/broadcast-codec.desktop`
+waits ten seconds then opens Firefox to this direct `http://192.168.254.1`
+address.  The Lenovo clock uses `systemd-timesyncd`; it is enabled and was
+synchronized to `ntp.ubuntu.com` on 2026-09-14.  Check both with:
+
+```bash
+ssh broadcast@172.16.10.212 'timedatectl status; systemctl is-enabled systemd-timesyncd'
+```
+
 For a safe, non-mutating diagnosis, run:
 
 ```bash
@@ -266,6 +275,27 @@ Wait 3 seconds, check the remote device's status.
 ---
 
 ## Issue: High jitter or packet loss spikes
+
+### Read the dashboard health state first
+
+The dashboard retains a short operational history rather than showing only a
+single instantaneous counter.  **RX OUTAGE** (red) means the RX watchdog has
+started recovery and is still waiting for the first valid incoming ADTS packet.
+Once audio resumes, red clears immediately; the incident remains **CHECK LINK**
+(amber) for up to five minutes.  CHECK LINK also appears for jitter of 30 ms or
+more, or a lost/late packet in the last 60 seconds.  It is therefore possible
+to hear incoming audio and correctly see CHECK LINK: that is a recent-warning
+state, not a claim that audio is currently absent.
+
+Use the **GRAPH** button next to Jitter to reveal the diagnostic timeline.  It
+does not appear automatically.  Rolling values and the graph's samples survive
+an automatic codec reconnect but reset when `briclite.service` restarts.
+
+For an active/repeated outage, correlate the dashboard with:
+
+```bash
+ssh marlowfm@172.16.10.213 'sudo journalctl -u briclite -n 150 --no-pager | rg "No RX packets|auto-reconnecting|Started"'
+```
 
 ### Step 1: Check network conditions
 ```bash

@@ -8,6 +8,7 @@ from typing import Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from core.data_broker import global_state
@@ -343,6 +344,7 @@ async def _rx_watchdog():
         elapsed = time.monotonic() - controller.last_rx_packet
         if elapsed > _RX_WATCHDOG_S:
             log.warning(f"No RX packets for {elapsed:.1f}s — auto-reconnecting")
+            await global_state.record_rx_outage(elapsed, "No RX packets — watchdog reconnect")
             await _full_reconnect(controller.rx_channel_mode)
             await _sync_goxlr_state(interface)
             log.info("Auto-reconnect complete")
@@ -443,6 +445,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Broadcast Audio Codec Core", lifespan=lifespan)
+app.mount("/assets", StaticFiles(directory=os.path.join(_BRICLITE_HOME, "web/assets")), name="assets")
 
 
 class ConnectRequest(BaseModel):

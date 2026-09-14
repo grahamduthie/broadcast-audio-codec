@@ -150,6 +150,11 @@ class JitterBuffer:
             self.jitter_ms     = 0.0
         self._event.set()
 
+    def stats_snapshot(self):
+        """Return a consistent playout-stat snapshot for telemetry polling."""
+        with self._lock:
+            return self.jitter_ms, self.packets_lost, self.packets_late
+
 
 class PipelineController:
 
@@ -194,6 +199,8 @@ class PipelineController:
         self._rx_rebuild_timer = None
         self._rx_rebuild_lock  = threading.Lock()
         self.jitter_buf  = JitterBuffer(latency_ms=self.latency_ms)
+        self._reported_lost_total = 0
+        self._reported_late_total = 0
         self.tx_pipeline = None
         self.rx_pipeline = None
         self.rx_appsrc   = None
@@ -203,6 +210,7 @@ class PipelineController:
         self.sock        = None
         self.glib_loop   = GLib.MainLoop()
         self.last_rx_packet = 0.0
+        self._rx_packet_seen = False
         self._last_tx_sample = 0.0
         # PTS fed to rx_appsrc, in nanoseconds. Must live on the instance,
         # not as a local in _playout_loop(): stop()/start() spawn a fresh
@@ -353,6 +361,8 @@ class PipelineController:
         already brought the local pipeline live on this instance."""
         self.event_loop = event_loop
         self.jitter_buf.reset()
+        self._reported_lost_total = 0
+        self._reported_late_total = 0
 
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4194304)
@@ -361,6 +371,7 @@ class PipelineController:
         self.sock.bind(("0.0.0.0", self.rx_port))
 
         self.last_rx_packet = time.monotonic()
+        self._rx_packet_seen = False
         self._last_rx_sink_buffer = time.monotonic()
         self._last_rx_sink_buffer_seen = None
         self._last_tx_sample = 0.0
@@ -563,6 +574,12 @@ class PipelineController:
             if len(payload) < 2 or payload[0] != 0xFF or (payload[1] & 0xF0) != 0xF0:
                 continue
 
+            if not self._rx_packet_seen:
+                self._rx_packet_seen = True
+                asyncio.run_coroutine_threadsafe(
+                    global_state.mark_rx_packets_resumed(), self.event_loop
+                )
+
             if last_arrival is not None:
                 gap = recv_time - last_arrival
                 if gap > _GAP_LOG_THRESHOLD_S:
@@ -673,11 +690,12 @@ class PipelineController:
     async def _poll_stats_loop(self):
         while self.is_active:
             await asyncio.sleep(1.0)
-            await global_state.update_metrics({
-                "jitter": int(self.jitter_buf.jitter_ms),
-                "lost":   self.jitter_buf.packets_lost,
-                "late":   self.jitter_buf.packets_late,
-            })
+            jitter_ms, lost_total, late_total = self.jitter_buf.stats_snapshot()
+            lost_delta = max(0, lost_total - self._reported_lost_total)
+            late_delta = max(0, late_total - self._reported_late_total)
+            self._reported_lost_total = lost_total
+            self._reported_late_total = late_total
+            await global_state.record_network_sample(jitter_ms, lost_delta, late_delta)
 
     def _socket_recv_queue_bytes(self) -> int:
         """Bytes currently sitting unread in the RX UDP socket's kernel

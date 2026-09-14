@@ -171,8 +171,12 @@ appsrc (fed by Python playout loop)
 
 **DataBroker (`data_broker.py`):**
 - Thread-safe dataclass with `asyncio.Lock`
-- Holds: connection status, peak dBFS (TX/RX L+R), jitter, packet loss counters
+- Holds: connection status, peak dBFS (TX/RX L+R), current jitter, packet loss counters, and rolling network-health history
 - Updated by: GStreamer level messages, jitter buffer stats, pipeline state
+
+**Network-health history (added 2026-09-14):** jitter samples, lost/late packet events, and watchdog RX-outage events are timestamped in `DataBroker` and retained for five minutes (the short window is 60 seconds).  Telemetry includes `jitter_5m_max`, `lost_60s`/`lost_5m`, `late_60s`/`late_5m`, outage count/details, and `network_health`.  The process-wide history deliberately survives an automatic pipeline reconnect, but not a service restart.
+
+`main.py` records an outage immediately before its no-RX-packet watchdog triggers a full reconnect.  `PipelineController` clears the active-outage flag only after the first validated ADTS packet of the restarted receiver.  Thus `critical`/red **RX OUTAGE** means recovery is currently awaiting real audio; a recovered incident remains `warning`/amber **CHECK LINK** for the five-minute evidence window.  `warning` also covers current jitter >=30 ms or any lost/late packet in the last 60 seconds; otherwise a connected link is `healthy`.
 
 **Update Flow:**
 1. GStreamer `level` element emits message on bus
@@ -232,11 +236,10 @@ The incoming AAC stream is dual-mono: the left and right channels carry independ
 
 The old RX Channel Routing buttons (L+R Stereo/Left/Right) were removed from the UI — the backend `POST /api/rx_mode` and `rx_channel_mode` plumbing are untouched, just not exposed here. The old digital/analogue meter-style toggle and SVG VU-needle gauges (`grahamduthie/mfm-meter`-derived) were dropped in favour of one cohesive digital "LED bar" look across every module.
 
-**Jitter/network display:** `lbl-jitter`/`lbl-lost`/`lbl-late` are small always-on numbers in the header. The rolling Chart.js graph is collapsed by default (`#net-panel`) and only auto-expands when jitter exceeds 30ms or any packet is lost/late, collapsing again after ~8s quiet — or toggle it manually via the "▾ NETWORK" button, which then stops the auto behaviour until the page reloads.
+**Jitter/network display (updated 2026-09-14):** the header reports current jitter, its five-minute maximum, and rolling loss/late/outage state.  The Chart.js graph (`#net-panel`) is hidden by default and is shown or hidden only by the **GRAPH** button beside the jitter reading; it never auto-opens.  This keeps an operator's normal layout stable while preserving an on-demand diagnostic timeline.
 
 **Controls:**
-- Connect button — starts both pipelines, opens UDP socket
-- Disconnect button — halts pipelines, closes socket
+- Link indicator plus action button — green **Link Connected** with **Disconnect**, or red **Link Disconnected** with **Connect**; the action starts/stops the RTP socket and network threads while the local audio/meter pipelines remain available
 - Optional IP override field — allows changing `target_ip` at runtime
 - `POST /api/mic_gain` `{"value": 0-72}` — Mic preamp gain
 - `POST /api/studio_return_level` `{"level": 0-255}` — Studio Return PFL baseline

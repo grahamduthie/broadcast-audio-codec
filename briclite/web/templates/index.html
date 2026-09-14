@@ -69,6 +69,11 @@
             flex-shrink: 0;
         }
         .brand { display: flex; align-items: center; gap: 10px; }
+        .brand-logo {
+            width: 64px; height: 49px; object-fit: contain; flex-shrink: 0;
+            border: 1px solid #00a9d855; border-radius: 4px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+        }
         .brand-mark {
             width: 9px; height: 9px; border-radius: 50%;
             background: var(--cyan);
@@ -88,15 +93,7 @@
         .badge-goxlr { background: #003338; color: var(--cyan); border: 1px solid #00e5ff55; }
         .badge-behringer { background: #16233a; color: #7db3f5; border: 1px solid #2f7bd655; }
 
-        .status-cluster { display: flex; align-items: center; gap: 14px; }
-        .status-pill {
-            display: flex; align-items: center; gap: 7px;
-            font-family: var(--font-num); font-size: 11px; font-weight: 700; letter-spacing: 0.05em;
-            padding: 5px 10px; border-radius: 20px; background: #14181a; border: 1px solid var(--line);
-        }
-        .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-faint); }
-        .status-pill.live .status-dot { background: var(--green); box-shadow: 0 0 6px var(--green); animation: pulse 1.8s ease-in-out infinite; }
-        .status-pill.down .status-dot { background: var(--red); }
+        .status-cluster { display: flex; align-items: center; gap: 10px; }
         @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.45; } }
 
         .net-readout {
@@ -104,6 +101,27 @@
             display: flex; gap: 12px; align-items: center;
         }
         .net-readout b { color: var(--ink); font-weight: 600; }
+        .net-stat { white-space: nowrap; }
+        .net-stat small { font-size: 8px; color: var(--ink-faint); margin-left: 3px; }
+        .network-health {
+            display: flex; align-items: center; gap: 7px; min-width: 158px;
+            padding: 4px 8px; border: 1px solid var(--line); border-radius: 4px;
+            background: #14181a; font-family: var(--font-num);
+        }
+        .network-health .health-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-faint); flex-shrink: 0; }
+        .network-health .health-copy { display: flex; flex-direction: column; line-height: 1.05; }
+        .network-health .health-kicker { font-size: 7px; color: var(--ink-faint); letter-spacing: 0.09em; text-transform: uppercase; }
+        .network-health b { font-size: 10px; letter-spacing: 0.06em; color: var(--ink-dim); }
+        .network-health .incident { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 8px; color: var(--ink-faint); }
+        .network-health.healthy { border-color: #35d07f55; }
+        .network-health.healthy .health-dot { background: var(--green); box-shadow: 0 0 5px var(--green); }
+        .network-health.healthy b { color: var(--green); }
+        .network-health.warning { border-color: #ffb00066; }
+        .network-health.warning .health-dot { background: var(--amber); box-shadow: 0 0 5px var(--amber); }
+        .network-health.warning b { color: var(--amber); }
+        .network-health.critical { border-color: #ff4d4d88; background: #281617; }
+        .network-health.critical .health-dot { background: var(--red); box-shadow: 0 0 6px var(--red); animation: pulse 1.2s ease-in-out infinite; }
+        .network-health.critical b { color: var(--red); }
         .net-readout .warn { color: var(--amber); }
         .net-readout .crit { color: var(--red); }
         .net-toggle {
@@ -112,6 +130,7 @@
             cursor: pointer; letter-spacing: 0.05em;
         }
         .net-toggle:hover { border-color: var(--cyan-dim); color: var(--cyan); }
+        .net-stat .net-toggle { margin-left: 4px; vertical-align: middle; }
 
         /* ---------- network graph (collapsible) ---------- */
         #net-panel {
@@ -144,6 +163,18 @@
         .btn-solid-red   { background: var(--red); color: #2b0a0a; }
         .btn-muted       { background: #232a2c; color: var(--ink-dim); border: 1px solid var(--line); }
         .btn:hover { filter: brightness(1.1); }
+        .link-control { display: flex; align-items: center; gap: 8px; }
+        .link-indicator {
+            display: flex; align-items: center; gap: 7px;
+            min-width: 145px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 4px;
+            background: #14181a; color: var(--ink-dim);
+            font-family: var(--font-num); font-size: 10px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+        }
+        .link-indicator .link-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+        .link-indicator.connected { color: var(--green); border-color: #35d07f66; background: #11251b; }
+        .link-indicator.connected .link-dot { background: var(--green); box-shadow: 0 0 6px var(--green); animation: pulse 1.8s ease-in-out infinite; }
+        .link-indicator.disconnected { color: var(--red); border-color: #ff4d4d66; background: #281617; }
+        .link-indicator.disconnected .link-dot { background: var(--red); box-shadow: 0 0 5px var(--red); }
         .spacer { flex: 1 1 auto; }
         .link-out {
             font-family: var(--font-num); font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
@@ -233,7 +264,16 @@
         .dash-row-fill { flex: 1 1 auto; min-height: 0; }
 
         /* channel strips — Mic / Line In / News / Console: just a % readout */
-        .module.chstrip { width: 112px; }
+        /* Compact channel strips free horizontal room for the clock and the
+           adjacent incoming-network meters: 84px is 75% of their former
+           112px width. */
+        .module.chstrip {
+            width: 84px; height: 84px; flex: 0 0 84px;
+            padding: 7px 6px 6px;
+        }
+        .module.chstrip .mod-label { font-size: 10px; letter-spacing: 0.07em; }
+        .module.chstrip .mod-sub { font-size: 8px; margin-bottom: 3px; }
+        .module.chstrip .ctrl-slot { display: none; }
         .pct-box {
             width: 100%; background: #0a0d0e; border: 1px solid #000; border-radius: 4px;
             box-shadow: inset 0 2px 6px rgba(0,0,0,0.6);
@@ -249,6 +289,11 @@
            compact while Studio Return/News (siblings in the same row)
            grow tall — see .db-track.sz-sm below. */
         .module.ctrl-card { width: 150px; justify-content: center; align-self: flex-start; }
+        .monitor-stack { display: flex; gap: 8px; align-self: flex-start; flex: 0 0 356px; min-width: 0; }
+        .monitor-stack .ctrl-card {
+            width: 174px; height: 174px; min-height: 174px; max-height: 174px;
+            flex: 0 0 174px; align-self: flex-start;
+        }
         .mini-row { width: 100%; }
         .mini-row + .mini-row { margin-top: 9px; }
 
@@ -330,6 +375,8 @@
             .dash-grid { flex-direction: column; }
             .dash-left { flex: 0 0 auto; }
             .dash-right { flex: 1 1 auto; }
+            .topbar { flex-wrap: wrap; }
+            .status-cluster { flex-wrap: wrap; justify-content: flex-end; }
         }
         @media (max-width: 700px) {
             .dash-right { flex-direction: column; }
@@ -337,6 +384,9 @@
         }
         @media (max-width: 560px) {
             .module.chstrip, .module.net-chan, .module.ctrl-card { width: 46%; flex: 1 1 auto; }
+            .module.chstrip { height: auto; aspect-ratio: 1; }
+            .monitor-stack { width: 100%; flex: 1 1 auto; flex-direction: column; }
+            .monitor-stack .module.ctrl-card { width: 100%; height: auto; min-height: 0; max-height: none; aspect-ratio: 1; flex: 1 1 auto; }
         }
     </style>
 </head>
@@ -344,7 +394,7 @@
 
     <div class="topbar">
         <div class="brand">
-            <div class="brand-mark"></div>
+            <img class="brand-logo" src="/assets/marlowfm-logo.png" alt="Marlow FM 97.5">
             <div>
                 <h1>Broadcast Audio Codec</h1>
                 <small>PSA300 &middot; Studio Receiver</small>
@@ -353,12 +403,15 @@
         </div>
         <div class="status-cluster">
             <div class="net-readout">
-                JITTER <b id="lbl-jitter">0</b>ms &nbsp; LOST <b id="lbl-lost">0</b> &nbsp; LATE <b id="lbl-late">0</b>
-                <button class="net-toggle" id="net-toggle" onclick="toggleNetPanel()">▾ NETWORK</button>
+                <span class="net-stat">JITTER <b id="lbl-jitter">0.0</b>ms <small id="lbl-jitter-peak">5m max 0.0</small><button class="net-toggle" id="net-toggle" onclick="toggleNetPanel()" aria-expanded="false">▸ GRAPH</button></span>
+                <span class="net-stat">LOST <b id="lbl-lost">0</b><small id="lbl-lost-5m">/60s · 0/5m</small></span>
+                <span class="net-stat">LATE <b id="lbl-late">0</b><small id="lbl-late-5m">/60s · 0/5m</small></span>
+                <span class="net-stat">OUTAGES <b id="lbl-outages">0</b><small>/5m</small></span>
             </div>
-            <div class="status-pill down" id="status-pill">
-                <div class="status-dot"></div>
-                <span id="lbl-status">DISCONNECTED</span>
+            <div class="network-health idle" id="network-health">
+                <span class="health-dot"></span>
+                <span class="health-copy"><span class="health-kicker">Network health</span><b id="network-health-label">OFFLINE</b></span>
+                <span class="incident" id="network-incident">NO RECENT INCIDENTS</span>
             </div>
         </div>
     </div>
@@ -368,8 +421,12 @@
     </div>
 
     <div class="transport">
-        <button class="btn btn-solid-green" id="btn-connect" onclick="connectLink()">Connect Link</button>
-        <button class="btn btn-muted" id="btn-disconnect" onclick="fetch('/api/disconnect', {method:'POST'})">Disconnect</button>
+        <div class="link-control">
+            <div class="link-indicator disconnected" id="link-indicator" role="status">
+                <span class="link-dot"></span><span id="link-status-label">Link Disconnected</span>
+            </div>
+            <button class="btn btn-solid-green" id="link-action" onclick="toggleLink()">Connect</button>
+        </div>
         <div class="spacer"></div>
         <a id="goxlr-ui-link" class="link-out" href="#" target="_blank" rel="noopener noreferrer">GoXLR Utility ↗</a>
     </div>
@@ -381,19 +438,17 @@
             <div class="dash-row">
                 <div class="module chstrip" id="strip-Mic">
                     <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
-                    <div class="mod-label">Mic</div>
-                    <div class="mod-sub">Fader A</div>
+                    <div class="mod-label">PRES MIC</div>
+                    <div class="mod-sub">FADER A</div>
                     <div class="ctrl-slot">
-                        <div class="trim-row"><span class="trim-title">Preamp Gain</span><span class="trim-val" id="val-mic-gain">50 dB</span></div>
-                        <input type="range" class="trim-slider" id="slider-mic-gain" min="0" max="72" value="50" oninput="onMicGainInput(this.value)">
                     </div>
                     <div class="pct-box"><span class="pct-num" id="readout-Mic">0</span><span class="pct-unit">%</span></div>
                 </div>
 
                 <div class="module chstrip" id="strip-LineIn">
                     <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
-                    <div class="mod-label">Line In</div>
-                    <div class="mod-sub">Fader B &middot; Guest Mic</div>
+                    <div class="mod-label">GUEST MIC</div>
+                    <div class="mod-sub">FADER B</div>
                     <div class="ctrl-slot"></div>
                     <div class="pct-box"><span class="pct-num" id="readout-LineIn">0</span><span class="pct-unit">%</span></div>
                 </div>
@@ -401,71 +456,84 @@
                 <div class="module chstrip" id="strip-Game">
                     <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
                     <div class="mod-label">News</div>
-                    <div class="mod-sub">Fader C &middot; Codec RX-R</div>
+                    <div class="mod-sub">FADER C</div>
                     <div class="ctrl-slot"></div>
                     <div class="pct-box"><span class="pct-num" id="readout-Game">0</span><span class="pct-unit">%</span></div>
                 </div>
 
                 <div class="module chstrip" id="strip-Console">
                     <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
-                    <div class="mod-label">Console</div>
-                    <div class="mod-sub">Fader D &middot; Music Player</div>
+                    <div class="mod-label">PLAYER</div>
+                    <div class="mod-sub">FADER D</div>
                     <div class="ctrl-slot"></div>
                     <div class="pct-box"><span class="pct-num" id="readout-Console">0</span><span class="pct-unit">%</span></div>
                 </div>
             </div>
 
-            <!-- MONITOR CONTROLS + INCOMING NETWORK -->
+            <!-- MONITOR + INPUT CONTROLS -->
             <div class="dash-row dash-row-fill">
-                <div class="module ctrl-card">
-                    <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
-                    <div class="mod-label">Monitor</div>
-                    <div class="mod-sub">Headphones &amp; speaker</div>
-                    <div class="mini-row" id="row-hp" style="display:none;">
-                        <div class="trim-row"><span class="trim-title" style="color:var(--cyan);">Headphones</span><span class="trim-val" id="hp-vol-label" style="color:var(--cyan);">100</span></div>
-                        <input type="range" class="trim-slider accent-cyan" id="hp-vol-slider" min="0" max="100" value="100" oninput="onHpVolInput(this.value)">
-                    </div>
-                    <div class="mini-row">
-                        <div class="trim-row"><span class="trim-title" style="color:var(--blue);">Speaker</span><span class="trim-val" id="rx-vol-label" style="color:var(--blue);">100</span></div>
-                        <input type="range" class="trim-slider accent-blue" id="rx-vol-slider" min="0" max="100" value="100" oninput="onRxVolInput(this.value)">
-                    </div>
-                </div>
-
-                <div class="module net-chan" id="strip-studio-return">
-                    <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
-                    <div class="mod-label">Studio Return</div>
-                    <div class="mod-sub">Pre-GoXLR &middot; always live</div>
-                    <div class="ctrl-slot">
-                        <div class="trim-row"><span class="trim-title" style="color:var(--cyan);">PFL Monitor Level</span><span class="trim-val" id="val-studio-return-level" style="color:var(--cyan);">48%</span></div>
-                        <input type="range" class="trim-slider accent-cyan" id="slider-studio-return" min="0" max="100" value="48" oninput="onStudioReturnInput(this.value)">
-                    </div>
-                    <div class="db-meter-row">
-                        <div class="db-meter-col">
-                            <div class="db-track sz-sm"><div class="db-fill" id="meter-studio-return"></div></div>
+                <div class="monitor-stack">
+                    <div class="module ctrl-card">
+                        <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
+                        <div class="mod-label">Monitor</div>
+                        <div class="mod-sub">Headphones &amp; speaker</div>
+                        <div class="mini-row" id="row-hp" style="display:none;">
+                            <div class="trim-row"><span class="trim-title" style="color:var(--cyan);">Headphones</span><span class="trim-val" id="hp-vol-label" style="color:var(--cyan);">100</span></div>
+                            <input type="range" class="trim-slider accent-cyan" id="hp-vol-slider" min="0" max="100" value="100" oninput="onHpVolInput(this.value)">
+                        </div>
+                        <div class="mini-row">
+                            <div class="trim-row"><span class="trim-title" style="color:var(--blue);">Speaker</span><span class="trim-val" id="rx-vol-label" style="color:var(--blue);">100</span></div>
+                            <input type="range" class="trim-slider accent-blue" id="rx-vol-slider" min="0" max="100" value="100" oninput="onRxVolInput(this.value)">
                         </div>
                     </div>
-                    <div class="db-readout" id="lbl-studio-return-db">— dBFS</div>
-                </div>
 
-                <div class="module net-chan" id="strip-news">
-                    <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
-                    <div class="mod-label">News</div>
-                    <div class="mod-sub">Pre-GoXLR &middot; always live</div>
-                    <div class="ctrl-slot"></div>
-                    <div class="db-meter-row">
-                        <div class="db-meter-col">
-                            <div class="db-track sz-sm"><div class="db-fill" id="meter-news"></div></div>
+                    <div class="module ctrl-card">
+                        <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
+                        <div class="mod-label">Input Controls</div>
+                        <div class="mod-sub">Preamp &amp; studio return</div>
+                        <div class="mini-row">
+                            <div class="trim-row"><span class="trim-title">Preamp Gain</span><span class="trim-val" id="val-mic-gain">50 dB</span></div>
+                            <input type="range" class="trim-slider" id="slider-mic-gain" min="0" max="72" value="50" oninput="onMicGainInput(this.value)">
+                        </div>
+                        <div class="mini-row">
+                            <div class="trim-row"><span class="trim-title" style="color:var(--cyan);">PFL Monitor Level</span><span class="trim-val" id="val-studio-return-level" style="color:var(--cyan);">48%</span></div>
+                            <input type="range" class="trim-slider accent-cyan" id="slider-studio-return" min="0" max="100" value="48" oninput="onStudioReturnInput(this.value)">
+                        </div>
                         </div>
                     </div>
-                    <div class="db-readout" id="lbl-news-db">— dBFS</div>
-                </div>
             </div>
 
         </div>
 
         <!-- CLOCK + BROADCAST MIX — the two "at a glance" hero elements,
-             side by side and matched in height -->
+             with the incoming meters alongside the clock -->
         <div class="dash-right">
+            <div class="module net-chan" id="strip-studio-return">
+                <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
+                <div class="mod-label">Studio Return</div>
+                <div class="mod-sub">Pre-GoXLR &middot; always live</div>
+                <div class="ctrl-slot"></div>
+                <div class="db-meter-row">
+                    <div class="db-meter-col">
+                        <div class="db-track sz-sm"><div class="db-fill" id="meter-studio-return"></div></div>
+                    </div>
+                </div>
+                <div class="db-readout" id="lbl-studio-return-db">— dBFS</div>
+            </div>
+
+            <div class="module net-chan" id="strip-news">
+                <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
+                <div class="mod-label">News</div>
+                <div class="mod-sub">Pre-GoXLR &middot; always live</div>
+                <div class="ctrl-slot"></div>
+                <div class="db-meter-row">
+                    <div class="db-meter-col">
+                        <div class="db-track sz-sm"><div class="db-fill" id="meter-news"></div></div>
+                    </div>
+                </div>
+                <div class="db-readout" id="lbl-news-db">— dBFS</div>
+            </div>
+
             <div class="module clock-card">
                 <span class="screw tl"></span><span class="screw tr"></span><span class="screw bl"></span><span class="screw br"></span>
                 <div class="clk-date" id="clk-date">—</div>
@@ -572,29 +640,44 @@
             fetch('/api/connect', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}' });
         }
 
-        // ---------- network panel (auto show/hide on trouble) ----------
-        let netPanelManual = null; // null = auto, true/false = user override
+        let linkConnected = false;
+        function toggleLink() {
+            if (linkConnected) {
+                fetch('/api/disconnect', {method:'POST'});
+            } else {
+                connectLink();
+            }
+        }
+
+        // ---------- network graph (operator-controlled) ----------
         let netPanelOpen = false;
-        let netQuietSince = null;
-        const JITTER_WARN_MS = 30;
         function setNetPanel(open) {
             netPanelOpen = open;
             document.getElementById('net-panel').classList.toggle('open', open);
+            const toggle = document.getElementById('net-toggle');
+            toggle.textContent = open ? '▾ GRAPH' : '▸ GRAPH';
+            toggle.setAttribute('aria-expanded', String(open));
         }
         function toggleNetPanel() {
-            netPanelManual = !netPanelOpen;
-            setNetPanel(netPanelManual);
+            setNetPanel(!netPanelOpen);
         }
-        function evaluateNetPanel(d) {
-            if (netPanelManual !== null) return; // user has taken control
-            const trouble = d.jitter > JITTER_WARN_MS || d.lost > 0 || d.late > 0;
-            if (trouble) {
-                netQuietSince = null;
-                if (!netPanelOpen) setNetPanel(true);
-            } else if (netPanelOpen) {
-                if (netQuietSince === null) netQuietSince = Date.now();
-                if (Date.now() - netQuietSince > 8000) setNetPanel(false);
-            }
+
+        function formatIncidentTime(epochSeconds) {
+            return new Intl.DateTimeFormat('en-GB', {
+                timeZone: 'Europe/London', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+            }).format(new Date(epochSeconds * 1000));
+        }
+
+        function updateNetworkHealth(d) {
+            const health = d.network_health || 'idle';
+            const healthEl = document.getElementById('network-health');
+            const label = document.getElementById('network-health-label');
+            const incident = document.getElementById('network-incident');
+            healthEl.className = 'network-health ' + health;
+            label.textContent = ({healthy: 'HEALTHY', warning: 'CHECK LINK', critical: 'RX OUTAGE', idle: 'OFFLINE'})[health] || 'UNKNOWN';
+            incident.textContent = d.last_rx_incident_at
+                ? `LAST RX GAP ${d.last_rx_incident_duration_s.toFixed(1)}s · ${formatIncidentTime(d.last_rx_incident_at)}`
+                : 'NO RECENT INCIDENTS';
         }
 
         const jitterCtx = document.getElementById('jitterChart').getContext('2d');
@@ -623,20 +706,27 @@
             const d = JSON.parse(event.data);
 
             const live = d.status === 'CONNECTED';
-            document.getElementById('lbl-status').innerText = d.status;
-            document.getElementById('status-pill').classList.toggle('live', live);
-            document.getElementById('status-pill').classList.toggle('down', !live);
-            // Connect/Disconnect reflect current status: the button matching
-            // what's actually true right now is solid, the other is muted.
-            document.getElementById('btn-connect').className = 'btn ' + (live ? 'btn-solid-green' : 'btn-muted');
-            document.getElementById('btn-disconnect').className = 'btn ' + (live ? 'btn-muted' : 'btn-solid-red');
-            document.getElementById('lbl-jitter').innerText = d.jitter;
-            document.getElementById('lbl-lost').innerText = d.lost;
-            document.getElementById('lbl-late').innerText = d.late;
-            evaluateNetPanel(d);
+            linkConnected = live;
+            const linkIndicator = document.getElementById('link-indicator');
+            const linkAction = document.getElementById('link-action');
+            linkIndicator.className = 'link-indicator ' + (live ? 'connected' : 'disconnected');
+            document.getElementById('link-status-label').innerText = live ? 'Link Connected' : 'Link Disconnected';
+            linkAction.className = 'btn ' + (live ? 'btn-solid-red' : 'btn-solid-green');
+            linkAction.textContent = live ? 'Disconnect' : 'Connect';
+            const jitter = Number(d.jitter || 0);
+            const lost60 = d.lost_60s ?? d.lost ?? 0;
+            const late60 = d.late_60s ?? d.late ?? 0;
+            document.getElementById('lbl-jitter').innerText = jitter.toFixed(1);
+            document.getElementById('lbl-jitter-peak').innerText = `5m max ${Number(d.jitter_5m_max || 0).toFixed(1)}`;
+            document.getElementById('lbl-lost').innerText = lost60;
+            document.getElementById('lbl-lost-5m').innerText = `/60s · ${d.lost_5m ?? lost60}/5m`;
+            document.getElementById('lbl-late').innerText = late60;
+            document.getElementById('lbl-late-5m').innerText = `/60s · ${d.late_5m ?? late60}/5m`;
+            document.getElementById('lbl-outages').innerText = d.rx_outages_5m ?? 0;
+            updateNetworkHealth(d);
             if (jitterChart) {
                 jitterChart.data.datasets[0].data.shift();
-                jitterChart.data.datasets[0].data.push(d.jitter);
+                jitterChart.data.datasets[0].data.push(jitter);
                 jitterChart.update('none');
             }
 
